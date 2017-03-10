@@ -1,3 +1,4 @@
 class Config:
-    lstm_size_en = 5
-    lstm_size_de = 5
+    def __init__(flag):
+        size_en = 5
+        flag = flag

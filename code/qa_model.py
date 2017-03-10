@@ -11,7 +11,6 @@ import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 
 from evaluate import exact_match_score, f1_score
-from qa_config import Config
 
 logging.basicConfig(level=logging.INFO)
 
@@ -25,6 +24,22 @@ def get_optimizer(opt):
         assert (False)
     return optfn
 
+
+class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
+    def __init__(self, num_units, encoder_output, scope=None):
+        self.hs = encoder_output
+        super(GRUAttnCell, self).__init__(num_units)
+    def __call__(self, inputs, state, scope=None):
+        gru_out, gru_state = super(GRUAttnCell, self).__call__(inputs, state, scope)
+        with vs.variable_scope(scope or type(self).__name__):
+            with vs.variable_scope("Attn"):
+                ht = tf.nn.rnn_cell._linear(gru_out, self._num_units, True, 1.0)
+                ht = tf.expand_dims(ht, axis=1)
+            scores = tf.reduce_sum(self.hs*ht, reduction_indices=2, keep_dimsTrue)
+            context = tf.reduce_sum(self.hs*scores, reduction_indices=1)
+            with vs.variable_scope("AttnConcat"):
+                out = tf.nn.relu(tf.nn.rnn_cell._linear([context, gru_out], self._num_units, True, 1.0))
+            return (out out)
 
 class Encoder(object):
     def __init__(self, size, vocab_dim, config):
@@ -46,12 +61,17 @@ class Encoder(object):
         :return: an encoded representation of your input.
                  It can be context-level representation, word-level representation,
                  or both.
-        """
-        cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.lstm_size_en)
-        cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.lstm_size_en)
-        outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, tf.boolean_mask(self.inputs, masks), sequence_length=None, initial_state_fw=None, initial_state_bw=None, dtype=None, parallel_iterations=None, swap_memory=False, time_major=False, scope="encode")
+        """        
+        cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size)
+        cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size)
+        (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, tf.boolean_mask(inputs, masks), sequence_length=None, initial_state_fw=None, initial_state_bw=None, dtype=dtypes.float32, parallel_iterations=None, swap_memory=False, time_major=True, scope="encode")
         return outputs, output_states
 
+    def encode_w_attn(self, inputs, masks, prev_states, scope="encode", reuse=False):
+        self.attn_cell = GRUAttnCell(self.config.flag.state_size, prev_states)
+        with vs.variable_scope(scope, reuse):
+            outputs, output_states =  dynamic_rnn(self.attn_cell,inputs)
+        return outputs, output_states
 
 class Decoder(object):
     def __init__(self, output_size, config):
@@ -70,13 +90,16 @@ class Decoder(object):
                               decided by how you choose to implement the encoder
         :return:
         """
-        
-
-        return
+        h_q, H_q, h_p, H_p = knowledge_rep
+        with vs.scope("answr_start"):
+            a_s = tf.nn.rnn_cell._linear([h_q, h_p], output_size=self.config.flag.output_size)
+        with vs.scope("answer_end"):
+            a_e = tf.nn.rnn_cell._linear([h_q, h_p], output_size=self.config.flag.output_size)
+        return (a_s, a_e)
 
 # TODO
 class QASystem(object):
-    def __init__(self, encoder, decoder, *args):
+    def __init__(self, encoder, decoder, config=None, *args):
         """
         Initializes your System
 
@@ -86,7 +109,16 @@ class QASystem(object):
         """
 
         # ==== set up placeholder tokens ========
-
+        self.encoder = encoder
+        self.decoder = decoder
+        self.config = config
+        self.inputs_p_placeholder = tf.placeholder(tf.int32, shape=(None, config.flag.max_length_p, config.flag.embedding_size), name="inputs_p_placeholder")
+        self.inputs_q_placeholder = tf.placeholder(tf.int32, shape=(None, config.flag.max_length_q, config.flag.embedding_size), name="inputs_q_placeholder")
+        self.masks_p_placeholder = tf.placeholder(tf.bool, shape=(None, self.flag.max_length_p), name="masks_p")
+        self.masks_q_placeholder = tf.placeholder(tf.bool, shape=(None, self.flag.max_length_q), name="masks_q")
+        self.labels_answer_start = tf.placeholder(tf.int32, shape=None, name="answer_start")
+        self.labels_answer_end = tf.placeholder(tf.int32, shape=None, name="answer_end")
+        self.dropout_placeholder = tf.placeholder(tf.float32, name="dropout")
 
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
@@ -105,8 +137,11 @@ class QASystem(object):
         to assemble your reading comprehension system!
         :return:
         """
-        raise NotImplementedError("Connect all parts of your system here!")
-
+        # raise NotImplementedError("Connect all parts of your system here!")
+        h_q, H_q = self.encoder.encode(self.inputs_q, self.masks, self.encoder_state_input)
+        h_p, H_p = self.encoder.encode_w_attn(self.inputs_p, self.masks, self.prev_states)
+        knowledge_rep = (h_q, H_q, h_p, H_p)
+        self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
         """
@@ -114,7 +149,9 @@ class QASystem(object):
         :return:
         """
         with vs.variable_scope("loss"):
-            pass
+            l1 = tf.python.ops.nn.sparse_softmax_cross_entropy_with_logits(self.a_s, self.start_answer)
+            l2 = tf.python.ops.nn.sparse_softmax_cross_entropy_with_logits(self.a_e, self.end_answer)
+            self.loss = l1+l2
 
     def setup_embeddings(self):
         """
