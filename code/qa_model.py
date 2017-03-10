@@ -65,7 +65,7 @@ class Decoder(object):
                               decided by how you choose to implement the encoder
         :return:
         """
-
+      
         return
 
 class QASystem(object):
