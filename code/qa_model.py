@@ -13,7 +13,6 @@ from tensorflow.python.ops import variable_scope as vs
 from evaluate import exact_match_score, f1_score
 
 #my imports
-# from tensorflow.python.ops.nn import sparse_softmax_cross_entropy_with_logits as ssce
 from qa_data import PAD_ID
 
 logging.basicConfig(level=logging.INFO)
