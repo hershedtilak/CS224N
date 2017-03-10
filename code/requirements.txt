@@ -1,0 +1,6 @@
+numpy
+joblib
+nltk >= 3.2.2
+tqdm
+pyprind
+tensorflow==0.12.1
