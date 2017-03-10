@@ -13,8 +13,28 @@ from tensorflow.python.ops import variable_scope as vs
 from evaluate import exact_match_score, f1_score
 from qa_config import Config
 
+#my imports
+from tensorflow.python.ops.nn import sparse_softmax_cross_entropy_with_logits as ssce
+from qa_data import PAD_ID
+
 logging.basicConfig(level=logging.INFO)
 
+##### data should contain a list of sentences
+def pad_sequences(data, max_length):
+    ret = []
+
+    # Use this zero vector when padding sequences.
+    zero_vector = [PAD_ID] * Config.n_features
+
+    for sentence in data:
+        ### YOUR CODE HERE (~4-6 lines)
+        truncatedLength = min(len(sentence),max_length)
+        padding_size = max_length - truncatedLength
+        newSentence = sentence[0:truncatedLength] + [zero_vector]*padding_size
+        maskingSeq = [True]*truncatedLength + [False]*padding_size
+        ret.append((newSentence, maskingSeq))
+        ### END YOUR CODE ###
+    return ret
 
 def get_optimizer(opt):
     if opt == "adam":
@@ -86,7 +106,8 @@ class QASystem(object):
         """
 
         # ==== set up placeholder tokens ========
-
+        self.inputs_placeholder = tf.placeholder(tf.float32, shape=(None, self.config.max_length, 1), name="x")
+        self.labels_placeholder = tf.placeholder(tf.float32, shape=(None, 1), name="y")
 
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
@@ -113,17 +134,27 @@ class QASystem(object):
         Set up your loss computation here
         :return:
         """
+        ##### LOSS ASSUMING OUTPUT IS PAIR OF TWO INTEGERS #####
         with vs.variable_scope("loss"):
-            pass
+            l1 = ssce(self.a_s, self.start_answer)
+            l2 = ssce(self.a_e, self.end_answer)
+            self.loss = l1 + l2
 
     def setup_embeddings(self):
         """
         Loads distributed word representations based on placeholder tokens
         :return:
         """
+        ##### Load embeddings - CURRENTLY USING LENGTH 100
+        pretrained_embeddings = np.load(self.config.flag.data_dir + "/glove.trimmed.100.npz")
+        # Do some stuff        
         with vs.variable_scope("embeddings"):
-            pass
-
+            embedding = tf.Variable(pretrained_embeddings['glove'])
+            lookup_q = tf.nn.embedding_lookup(embedding, self.inputs_q)
+            lookup_p = tf.nn.embedding_lookup(embedding, self.inputs_p)
+            self.embeddings_q = tf.reshape(lookup_q, [-1, self.config.flag.max_length, self.config.flag.embedding_size])
+            self.embeddings_p = tf.reshape(lookup_p, [-1, self.config.flag.max_length, self.config.flag.embedding_size])
+        
     def optimize(self, session, train_x, train_y):
         """
         Takes in actual data to optimize your model
@@ -257,6 +288,10 @@ class QASystem(object):
         # you will also want to save your model parameters in train_dir
         # so that you can use your trained model to make predictions, or
         # even continue training
+       
+        # TODO - Figure this out
+        for p, q, a in dataset['train']:
+            self.optimize(session, (p, q), a)
 
         tic = time.time()
         params = tf.trainable_variables()
