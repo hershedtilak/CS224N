@@ -93,7 +93,7 @@ class QASystem(object):
             self.setup_embeddings()
             self.setup_system()
             self.setup_loss()
-
+            self.add_training_op(self.loss)
         # ==== set up training/updating procedure ====
         pass
 
@@ -116,6 +116,11 @@ class QASystem(object):
         with vs.variable_scope("loss"):
             pass
 
+    def.add_training_op(self, loss):
+        with vs.variable_scope("loss"):
+            optimizer = tf.train.AdamOptimizer(Config.lr)
+            self.train_op = optimizer.minimize(loss)
+            
     def setup_embeddings(self):
         """
         Loads distributed word representations based on placeholder tokens
@@ -131,11 +136,15 @@ class QASystem(object):
         :return:
         """
         input_feed = {}
-
+        ## ASSUMING train_x is a tuple of (question, paragraph)
+        input_feed[self.input_p] = train_x[0]
+        input_feed[self.input_q] = train_x[1]
+        
+        input_feed[self.output] = train_y
         # fill in this feed_dictionary like:
         # input_feed['train_x'] = train_x
 
-        output_feed = []
+        output_feed = [self.train_op, self.loss]
 
         outputs = session.run(output_feed, input_feed)
 
@@ -149,10 +158,15 @@ class QASystem(object):
         """
         input_feed = {}
 
+        input_feed[self.input_p] = valid_x[0]
+        input_feed[self.input_q] = valid_x[1]
+        
+        input_feed[self.output] = valid_y
         # fill in this feed_dictionary like:
         # input_feed['valid_x'] = valid_x
-
-        output_feed = []
+        ## Here, output feed should represent want we want to get from the session, in this case it should
+        ## what the system predicts
+        output_feed = [self.a_s, self.a_e]
 
         outputs = session.run(output_feed, input_feed)
 
@@ -169,7 +183,7 @@ class QASystem(object):
         # fill in this feed_dictionary like:
         # input_feed['test_x'] = test_x
 
-        output_feed = []
+        output_feed = [self.a_s, self.a_e]
 
         outputs = session.run(output_feed, input_feed)
 
@@ -263,3 +277,14 @@ class QASystem(object):
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
+        num_train = len(dataset['train'][2])
+
+        for i in range(self.config.flag.epochs):
+            # TODO shuffle data
+            for p, q, a in dataset['train']:
+                loss = self.optimize(session, (p,q), a)
+                print loss
+                break
+
+
+
