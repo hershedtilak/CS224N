@@ -11,6 +11,7 @@ import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 
 from evaluate import exact_match_score, f1_score
+from qa_config import Config
 
 logging.basicConfig(level=logging.INFO)
 
@@ -26,9 +27,10 @@ def get_optimizer(opt):
 
 
 class Encoder(object):
-    def __init__(self, size, vocab_dim):
+    def __init__(self, size, vocab_dim, config):
         self.size = size
         self.vocab_dim = vocab_dim
+        self.config = config
 
     def encode(self, inputs, masks, encoder_state_input):
         """
@@ -45,13 +47,16 @@ class Encoder(object):
                  It can be context-level representation, word-level representation,
                  or both.
         """
-
-        return
+        cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.lstm_size_en)
+        cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.lstm_size_en)
+        outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, tf.boolean_mask(self.inputs, masks), sequence_length=None, initial_state_fw=None, initial_state_bw=None, dtype=None, parallel_iterations=None, swap_memory=False, time_major=False, scope="encode")
+        return outputs, output_states
 
 
 class Decoder(object):
-    def __init__(self, output_size):
+    def __init__(self, output_size, config):
         self.output_size = output_size
+        self.config = config
 
     def decode(self, knowledge_rep):
         """
@@ -65,9 +70,11 @@ class Decoder(object):
                               decided by how you choose to implement the encoder
         :return:
         """
+        
 
         return
 
+# TODO
 class QASystem(object):
     def __init__(self, encoder, decoder, *args):
         """

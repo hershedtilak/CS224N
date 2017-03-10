@@ -9,6 +9,7 @@ import tensorflow as tf
 
 from qa_model import Encoder, QASystem, Decoder
 from os.path import join as pjoin
+from qa_config import Config
 
 import logging
 
@@ -78,15 +79,24 @@ def get_normalized_train_dir(train_dir):
 
 def main(_):
 
+    # TODO
     # Do what you need to load datasets from FLAGS.data_dir
-    dataset = None
+    dataset = dict()
+    for dataset_type in ['train', 'val']:
+        with open(os.path.join(FLAGS.data_dir, "%s.ids.context"%dataset_type)) as f:
+            data_context = [map(int,line.split()) for line in f.read().splitlines()]
+        with open(os.path.join(FLAGS.data_dir, "%s.ids.question"%dataset_type)) as f:
+            data_question = [map(int,line.split()) for line in f.read().splitlines()]
+        with open(os.path.join(FLAGS.data_dir, "%s.span"%dataset_type)) as f:
+            data_span = [map(int,line.split()) for line in f.read().splitlines()]
+        dataset[dataset_type] = (data_context, data_question, data_span)
 
     embed_path = FLAGS.embed_path or pjoin("data", "squad", "glove.trimmed.{}.npz".format(FLAGS.embedding_size))
     vocab_path = FLAGS.vocab_path or pjoin(FLAGS.data_dir, "vocab.dat")
     vocab, rev_vocab = initialize_vocab(vocab_path)
 
-    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size)
-    decoder = Decoder(output_size=FLAGS.output_size)
+    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, config=Config())
+    decoder = Decoder(output_size=FLAGS.output_size, config=Config())
 
     qa = QASystem(encoder, decoder)
 
