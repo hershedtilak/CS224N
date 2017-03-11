@@ -54,11 +54,11 @@ class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
             with vs.variable_scope("Attn"):
                 ht = tf.nn.rnn_cell._linear(gru_out, self._num_units, True, 1.0)
                 ht = tf.expand_dims(ht, axis=1)
-            scores = tf.reduce_sum(self.hs*ht, reduction_indices=2, keep_dimsTrue)
+            scores = tf.reduce_sum(self.hs*ht, reduction_indices=2, keep_dims=True)
             context = tf.reduce_sum(self.hs*scores, reduction_indices=1)
             with vs.variable_scope("AttnConcat"):
                 out = tf.nn.relu(tf.nn.rnn_cell._linear([context, gru_out], self._num_units, True, 1.0))
-            return (out out)
+            return (out, out)
 
 class Encoder(object):
     def __init__(self, size, vocab_dim, config):
@@ -83,7 +83,7 @@ class Encoder(object):
         """        
         cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size)
         cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size)
-        (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, tf.boolean_mask(inputs, masks), sequence_length=None, initial_state_fw=None, initial_state_bw=None, dtype=dtypes.float32, parallel_iterations=None, swap_memory=False, time_major=True, scope="encode")
+        (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, tf.boolean_mask(inputs, masks), sequence_length=None, initial_state_fw=None, initial_state_bw=None, dtype=tf.float32, parallel_iterations=None, swap_memory=False, time_major=True, scope="encode")
         return outputs, output_states
 
     def encode_w_attn(self, inputs, masks, prev_states, scope="encode", reuse=False):
@@ -131,10 +131,10 @@ class QASystem(object):
         self.encoder = encoder
         self.decoder = decoder
         self.config = config
-        self.inputs_p_placeholder = tf.placeholder(tf.int32, shape=(None, config.flag.max_length_p, config.flag.embedding_size), name="inputs_p_placeholder")
-        self.inputs_q_placeholder = tf.placeholder(tf.int32, shape=(None, config.flag.max_length_q, config.flag.embedding_size), name="inputs_q_placeholder")
-        self.masks_p_placeholder = tf.placeholder(tf.bool, shape=(None, self.flag.max_length_p), name="masks_p")
-        self.masks_q_placeholder = tf.placeholder(tf.bool, shape=(None, self.flag.max_length_q), name="masks_q")
+        self.inputs_p_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_p, config.flag.embedding_size), name="inputs_p_placeholder")
+        self.inputs_q_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_q, config.flag.embedding_size), name="inputs_q_placeholder")
+        self.masks_p_placeholder = tf.placeholder(tf.bool, shape=(None, self.config.flag.max_size_p), name="masks_p")
+        self.masks_q_placeholder = tf.placeholder(tf.bool, shape=(None, self.config.flag.max_size_q), name="masks_q")
         self.labels_answer_start = tf.placeholder(tf.int32, shape=None, name="answer_start")
         self.labels_answer_end = tf.placeholder(tf.int32, shape=None, name="answer_end")
         self.dropout_placeholder = tf.placeholder(tf.float32, name="dropout")
@@ -157,8 +157,8 @@ class QASystem(object):
         :return:
         """
         # raise NotImplementedError("Connect all parts of your system here!")
-        h_q, H_q = self.encoder.encode(self.inputs_q, self.masks, self.encoder_state_input)
-        h_p, H_p = self.encoder.encode_w_attn(self.inputs_p, self.masks, self.prev_states)
+        h_q, H_q = self.encoder.encode(self.inputs_q_placeholder, self.masks_q_placeholder, tf.zeros(self.config.flag.state_size))
+        h_p, H_p = self.encoder.encode_w_attn(self.inputs_p_placeholder, self.masks_p_placeholder, tf.zeros(self.config.flag.state_size))
         knowledge_rep = (h_q, H_q, h_p, H_p)
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
@@ -169,8 +169,8 @@ class QASystem(object):
         """
         ##### LOSS ASSUMING OUTPUT IS PAIR OF TWO INTEGERS #####
         with vs.variable_scope("loss"):
-            l1 = tf.python.ops.nn.sparse_softmax_cross_entropy_with_logits(self.a_s, self.start_answer)
-            l2 = tf.python.ops.nn.sparse_softmax_cross_entropy_with_logits(self.a_e, self.end_answer)
+            l1 = tf.python.ops.nn.sparse_softmax_cross_entropy_with_logits(self.a_s, self.start_answer_placeholder)
+            l2 = tf.python.ops.nn.sparse_softmax_cross_entropy_with_logits(self.a_e, self.end_answer_placeholder)
             self.loss = l1+l2
 
     def add_training_op(self, loss):
@@ -188,10 +188,10 @@ class QASystem(object):
         # Do some stuff        
         with vs.variable_scope("embeddings"):
             embedding = tf.Variable(pretrained_embeddings['glove'])
-            lookup_q = tf.nn.embedding_lookup(embedding, self.inputs_q)
-            lookup_p = tf.nn.embedding_lookup(embedding, self.inputs_p)
-            self.embeddings_q = tf.reshape(lookup_q, [-1, self.config.flag.max_length, self.config.flag.embedding_size])
-            self.embeddings_p = tf.reshape(lookup_p, [-1, self.config.flag.max_length, self.config.flag.embedding_size])
+            lookup_q = tf.nn.embedding_lookup(embedding, self.inputs_q_placeholder)
+            lookup_p = tf.nn.embedding_lookup(embedding, self.inputs_p_placeholder)
+            self.embeddings_q = tf.reshape(lookup_q, [-1, self.config.flag.max_size_q, self.config.flag.embedding_size])
+            self.embeddings_p = tf.reshape(lookup_p, [-1, self.config.flag.max_size_p, self.config.flag.embedding_size])
         
     def optimize(self, session, train_x, train_y):
         """
@@ -201,10 +201,11 @@ class QASystem(object):
         """
         input_feed = {}
         ## ASSUMING train_x is a tuple of (question, paragraph)
-        input_feed[self.input_p] = train_x[0]
-        input_feed[self.input_q] = train_x[1]
+        input_feed[self.inputs_p_placeholder] = train_x[0]
+        input_feed[self.inputs_q_placeholder] = train_x[1]
         
-        input_feed[self.output] = train_y
+        input_feed[self.start_answer_placeholder] = train_y[0]
+        input_feed[self.end_answer_placeholder] = train_y[1]
         # fill in this feed_dictionary like:
         # input_feed['train_x'] = train_x
 
@@ -351,7 +352,7 @@ class QASystem(object):
             # TODO shuffle data
             for p, q, a in dataset['train']:
                 loss = self.optimize(session, (p,q), a)
-                print loss
+                # print loss
                 break
 
 
