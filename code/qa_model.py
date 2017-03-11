@@ -20,7 +20,8 @@ logging.basicConfig(level=logging.INFO)
 
 ##### data should contain a list of sentences
 def pad_sequences(data, max_length):
-    ret = []
+    ret_sen = []
+    ret_length = []
 
     # Use this zero vector when padding sequences.
     zero_vector = [PAD_ID] * Config.n_features
@@ -30,10 +31,10 @@ def pad_sequences(data, max_length):
         truncatedLength = min(len(sentence),max_length)
         padding_size = max_length - truncatedLength
         newSentence = sentence[0:truncatedLength] + [zero_vector]*padding_size
-        maskingSeq = [True]*truncatedLength + [False]*padding_size
-        ret.append((newSentence, maskingSeq))
+        ret_sen.append(newSentence)
+        ret_length.append(truncatedLength)
         ### END YOUR CODE ###
-    return ret
+    return (ret_sen, ret_length)
 
 def get_optimizer(opt):
     if opt == "adam":
@@ -67,7 +68,7 @@ class Encoder(object):
         self.vocab_dim = vocab_dim
         self.config = config
 
-    def encode(self, inputs, masks, encoder_state_input):
+    def encode(self, inputs, sequence_length, encoder_state_input):
         """
         In a generalized encode function, you pass in your inputs,
         masks, and an initial
@@ -84,10 +85,14 @@ class Encoder(object):
         """        
         cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size)
         cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size)
-        (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, tf.boolean_mask(inputs, masks), sequence_length=None, initial_state_fw=None, initial_state_bw=None, dtype=tf.float32, parallel_iterations=None, swap_memory=False, time_major=True, scope="encode")
+
+        print(inputs.get_shape())
+
+        (fw_out, bw_out), output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=encoder_state_input, initial_state_bw=encoder_state_input, dtype=tf.float32, parallel_iterations=None, swap_memory=False, time_major=True, scope="encode")
+        
         return outputs, output_states
 
-    def encode_w_attn(self, inputs, masks, prev_states, scope="encode", reuse=False):
+    def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False):
         self.attn_cell = GRUAttnCell(self.config.flag.state_size, prev_states)
         with vs.variable_scope(scope, reuse):
             outputs, output_states =  dynamic_rnn(self.attn_cell,inputs)
@@ -134,8 +139,7 @@ class QASystem(object):
         self.config = config
         self.inputs_p_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_p, config.flag.embedding_size), name="inputs_p_placeholder")
         self.inputs_q_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_q, config.flag.embedding_size), name="inputs_q_placeholder")
-        self.masks_p_placeholder = tf.placeholder(tf.bool, shape=(None, self.config.flag.max_size_p), name="masks_p")
-        self.masks_q_placeholder = tf.placeholder(tf.bool, shape=(None, self.config.flag.max_size_q), name="masks_q")
+        self.sequence_length_q_placeholder = tf.placeholder(tf.int32, shape=None, name="sequence_length_q")
         self.labels_answer_start = tf.placeholder(tf.int32, shape=None, name="answer_start")
         self.labels_answer_end = tf.placeholder(tf.int32, shape=None, name="answer_end")
         self.dropout_placeholder = tf.placeholder(tf.float32, name="dropout")
@@ -158,8 +162,8 @@ class QASystem(object):
         :return:
         """
         # raise NotImplementedError("Connect all parts of your system here!")
-        h_q, H_q = self.encoder.encode(self.inputs_q_placeholder, self.masks_q_placeholder, tf.zeros(self.config.flag.state_size))
-        h_p, H_p = self.encoder.encode_w_attn(self.inputs_p_placeholder, self.masks_p_placeholder, tf.zeros(self.config.flag.state_size))
+        h_q, H_q = self.encoder.encode(self.embeddings_q, self.sequence_length_q_placeholder, tf.zeros(self.config.flag.state_size))
+        h_p, H_p = self.encoder.encode_w_attn(self.embeddings_p, tf.zeros(self.config.flag.state_size))
         knowledge_rep = (h_q, H_q, h_p, H_p)
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
@@ -202,11 +206,12 @@ class QASystem(object):
         """
         input_feed = {}
         ## ASSUMING train_x is a tuple of (question, paragraph)
-        input_feed[self.inputs_p_placeholder] = train_x[0]
-        input_feed[self.inputs_q_placeholder] = train_x[1]
+        input_feed[self.inputs_p_placeholder], _ = pad_sequences(train_x[0])
+        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(train_x[1])
         
         input_feed[self.start_answer_placeholder] = train_y[0]
         input_feed[self.end_answer_placeholder] = train_y[1]
+
         # fill in this feed_dictionary like:
         # input_feed['train_x'] = train_x
 
