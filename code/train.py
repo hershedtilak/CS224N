@@ -39,7 +39,7 @@ tf.app.flags.DEFINE_string("embed_path", "", "Path to the trimmed GLoVe embeddin
 
 FLAGS = tf.app.flags.FLAGS
 
-config = Config(flags = FLAGS)
+config = Config(FLAGS)
 
 
 
