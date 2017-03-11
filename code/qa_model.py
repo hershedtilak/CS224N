@@ -344,6 +344,21 @@ class QASystem(object):
         # even continue training
        
         # TODO - Figure this out
+        batch_size = 10
+        batch = range(len(dataset['train']))
+
+        random.shuffle(batch)
+        for i in range(len(batch), batch_size):
+
+            if(i+batch_size > len(dataset['train'])):
+                indices = batch[i:]
+            else:
+                indices = batch[i:i+batch_size]
+            batchP = [dataset['train'][0][j] for j in indices]
+            batchQ = [dataset['train'][1][j] for j in indices]
+            batchA = [dataset['train'][2][j] for j in indices]
+
+            
         for p, q, a in dataset['train']:
             self.optimize(session, (p, q), a)
 
@@ -357,7 +372,7 @@ class QASystem(object):
         for i in range(self.config.flag.epochs):
             # TODO shuffle data
             for p, q, a in dataset['train']:
-                loss = self.optimize(session, (p,q), a)
+                _,loss = self.optimize(session, (p,q), a)
                 # print loss
                 break
 
