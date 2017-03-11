@@ -25,7 +25,7 @@ def pad_sequences(data, max_length):
     ret_length = []
 
     # Use this zero vector when padding sequences.
-    zero_vector = [PAD_ID]
+    zero_vector = PAD_ID
 
     for sentence in data:
         ### YOUR CODE HERE (~4-6 lines)
@@ -138,8 +138,8 @@ class QASystem(object):
         self.encoder = encoder
         self.decoder = decoder
         self.config = config
-        self.inputs_p_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_p, config.flag.embedding_size), name="inputs_p_placeholder")
-        self.inputs_q_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_q, config.flag.embedding_size), name="inputs_q_placeholder")
+        self.inputs_p_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_p), name="inputs_p_placeholder")
+        self.inputs_q_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_q), name="inputs_q_placeholder")
         self.sequence_length_q_placeholder = tf.placeholder(tf.int32, shape=None, name="sequence_length_q")
         self.labels_answer_start = tf.placeholder(tf.int32, shape=None, name="answer_start")
         self.labels_answer_end = tf.placeholder(tf.int32, shape=None, name="answer_end")
@@ -208,7 +208,6 @@ class QASystem(object):
         input_feed = {}
         ## ASSUMING train_x is a tuple of (question, paragraph)
         beep, boop = pad_sequences(train_x[0], self.config.flag.max_size_p)
-        print(beep.get_shape())
         input_feed[self.inputs_p_placeholder], _ = pad_sequences(train_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(train_x[1], self.config.flag.max_size_q)
         
@@ -348,7 +347,6 @@ class QASystem(object):
        
 
         # TODO - Figure this out        
-
         batch_size = 10
         batch = range(len(dataset['train']))
 
@@ -373,10 +371,18 @@ class QASystem(object):
 
         for i in range(self.config.flag.epochs):
             # TODO shuffle data
-            for p, q, a in dataset['train']:
-                _,loss = self.optimize(session, (p,q), a)
-                # print loss
-                break
-
+            batch_size = 10
+            batch = range(len(dataset['train'][0]))
+            random.shuffle(batch)
+            for i in range(0,len(batch),batch_size):
+                if(i+batch_size > len(batch)):
+                    indices = batch[i:]
+                else:
+                    indices = batch[i:i+batch_size]
+                batchP = [dataset['train'][0][j] for j in indices]
+                batchQ = [dataset['train'][1][j] for j in indices]
+                batchA = [dataset['train'][2][j] for j in indices]
+                self.optimize(session, (batchP, batchQ), batchA)
+                return
 
 
