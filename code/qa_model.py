@@ -357,22 +357,17 @@ class QASystem(object):
         for i in range(self.config.flag.epochs):
             # TODO shuffle data
             batch_size = 10
-            batch = range(len(dataset['train']))
-
+            batch = range(len(dataset['train'][0]))
             random.shuffle(batch)
-            for i in range(batch_size, len(batch)):
-                if(i+batch_size > len(dataset['train'])):
+            for i in range(0,len(batch),batch_size):
+                if(i+batch_size > len(batch)):
                     indices = batch[i:]
                 else:
                     indices = batch[i:i+batch_size]
                 batchP = [dataset['train'][0][j] for j in indices]
                 batchQ = [dataset['train'][1][j] for j in indices]
                 batchA = [dataset['train'][2][j] for j in indices]
-                print(indices)
-                print(batchP)
-                print(batchQ)
-                print(batchA)
                 self.optimize(session, (batchP, batchQ), batchA)
-            break
+                return
 
 
