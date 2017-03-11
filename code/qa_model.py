@@ -13,8 +13,9 @@ from tensorflow.python.ops import variable_scope as vs
 from evaluate import exact_match_score, f1_score
 
 #my imports
-# from tensorflow.python.ops.nn import sparse_softmax_cross_entropy_with_logits as ssce
+from tensorflow.python.ops.nn import sparse_softmax_cross_entropy_with_logits as ssce
 from qa_data import PAD_ID
+import random
 
 logging.basicConfig(level=logging.INFO)
 
@@ -24,7 +25,7 @@ def pad_sequences(data, max_length):
     ret_length = []
 
     # Use this zero vector when padding sequences.
-    zero_vector = [PAD_ID] * Config.n_features
+    zero_vector = [PAD_ID]
 
     for sentence in data:
         ### YOUR CODE HERE (~4-6 lines)
@@ -83,19 +84,17 @@ class Encoder(object):
                  It can be context-level representation, word-level representation,
                  or both.
         """        
-        cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size)
-        cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size)
+        cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
+        cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
 
-        print(inputs.get_shape())
-
-        (fw_out, bw_out), output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=encoder_state_input, initial_state_bw=encoder_state_input, dtype=tf.float32, parallel_iterations=None, swap_memory=False, time_major=True, scope="encode")
-        
+        outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=None, initial_state_bw=None, dtype=tf.float32, parallel_iterations=None, swap_memory=False, time_major=True, scope="encode")
+        outputs = tf.concat(2, [outputs[0], outputs[1]])
         return outputs, output_states
 
     def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False):
         self.attn_cell = GRUAttnCell(self.config.flag.state_size, prev_states)
         with vs.variable_scope(scope, reuse):
-            outputs, output_states =  dynamic_rnn(self.attn_cell,inputs)
+            outputs, output_states =  tf.nn.dynamic_rnn(self.attn_cell, inputs, dtype=tf.float32)
         return outputs, output_states
 
 class Decoder(object):
@@ -116,10 +115,12 @@ class Decoder(object):
         :return:
         """
         h_q, H_q, h_p, H_p = knowledge_rep
-        with vs.scope("answr_start"):
-            a_s = tf.nn.rnn_cell._linear([h_q, h_p], output_size=self.config.flag.output_size)
-        with vs.scope("answer_end"):
-            a_e = tf.nn.rnn_cell._linear([h_q, h_p], output_size=self.config.flag.output_size)
+        h_q = tf.reshape(h_q, [-1, self.config.flag.max_size_q*2*self.config.flag.state_size])
+        h_p = tf.reshape(h_p, [-1, self.config.flag.max_size_p*self.config.flag.state_size])
+        with vs.variable_scope("answer_start"):
+            a_s = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
+        with vs.variable_scope("answer_end"):
+            a_e = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
         return (a_s, a_e)
 
 # TODO
@@ -174,13 +175,13 @@ class QASystem(object):
         """
         ##### LOSS ASSUMING OUTPUT IS PAIR OF TWO INTEGERS #####
         with vs.variable_scope("loss"):
-            l1 = tf.python.ops.nn.sparse_softmax_cross_entropy_with_logits(self.a_s, self.start_answer_placeholder)
-            l2 = tf.python.ops.nn.sparse_softmax_cross_entropy_with_logits(self.a_e, self.end_answer_placeholder)
-            self.loss = l1+l2
+            l1 = ssce(self.a_s, self.labels_answer_start)
+            l2 = ssce(self.a_e, self.labels_answer_end)
+            self.loss = tf.reduce_mean(l1+l2)
 
     def add_training_op(self, loss):
         with vs.variable_scope("loss"):
-            optimizer = tf.train.AdamOptimizer(Config.lr)
+            optimizer = tf.train.AdamOptimizer(self.config.flag.learning_rate)
             self.train_op = optimizer.minimize(loss)
             
     def setup_embeddings(self):
@@ -192,7 +193,7 @@ class QASystem(object):
         pretrained_embeddings = np.load(self.config.flag.data_dir + "/glove.trimmed.100.npz")
         # Do some stuff        
         with vs.variable_scope("embeddings"):
-            embedding = tf.Variable(pretrained_embeddings['glove'])
+            embedding = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
             lookup_q = tf.nn.embedding_lookup(embedding, self.inputs_q_placeholder)
             lookup_p = tf.nn.embedding_lookup(embedding, self.inputs_p_placeholder)
             self.embeddings_q = tf.reshape(lookup_q, [-1, self.config.flag.max_size_q, self.config.flag.embedding_size])
@@ -206,11 +207,13 @@ class QASystem(object):
         """
         input_feed = {}
         ## ASSUMING train_x is a tuple of (question, paragraph)
-        input_feed[self.inputs_p_placeholder], _ = pad_sequences(train_x[0])
-        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(train_x[1])
+        beep, boop = pad_sequences(train_x[0], self.config.flag.max_size_p)
+        print(beep.get_shape())
+        input_feed[self.inputs_p_placeholder], _ = pad_sequences(train_x[0], self.config.flag.max_size_p)
+        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(train_x[1], self.config.flag.max_size_q)
         
-        input_feed[self.start_answer_placeholder] = train_y[0]
-        input_feed[self.end_answer_placeholder] = train_y[1]
+        input_feed[self.labels_answer_start] = [item[0] for item in train_y]
+        input_feed[self.labels_answer_end] = [item[1] for item in train_y]
 
         # fill in this feed_dictionary like:
         # input_feed['train_x'] = train_x
@@ -343,13 +346,14 @@ class QASystem(object):
         # so that you can use your trained model to make predictions, or
         # even continue training
        
-        # TODO - Figure this out
+
+        # TODO - Figure this out        
+
         batch_size = 10
         batch = range(len(dataset['train']))
 
         random.shuffle(batch)
         for i in range(len(batch), batch_size):
-
             if(i+batch_size > len(dataset['train'])):
                 indices = batch[i:]
             else:
@@ -357,10 +361,8 @@ class QASystem(object):
             batchP = [dataset['train'][0][j] for j in indices]
             batchQ = [dataset['train'][1][j] for j in indices]
             batchA = [dataset['train'][2][j] for j in indices]
-
-            
         for p, q, a in dataset['train']:
-            self.optimize(session, (p, q), a)
+            self.optimize(session, (batchP, batchQ), batchA)
 
         tic = time.time()
         params = tf.trainable_variables()
