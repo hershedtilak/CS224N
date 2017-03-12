@@ -361,7 +361,7 @@ class QASystem(object):
             batch = range(num_train)
             
             loss = 0 
-            cnt = 0
+            count = 0
             
             for i in range(0,num_train,batch_size):
                 if(i+batch_size > len(batch)):
@@ -374,8 +374,8 @@ class QASystem(object):
                 _, batch_loss = self.optimize(session, (batchP, batchQ), batchA)
                 loss += batch_loss
                 count += 1
-                print(loss / count)
-            
+                
+            logging.info("Loss for epoch " + str(float(loss) / count) + "\n")
             save_path = saver.save(session, train_dir + "/epoch" + str(i) + ".ckpt")
             print(save_path)
 
