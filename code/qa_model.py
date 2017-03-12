@@ -84,11 +84,12 @@ class Encoder(object):
                  It can be context-level representation, word-level representation,
                  or both.
         """        
+        tf.Print(inputs, [inputs],"here we go")
         cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
         cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
-
-        outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=None, initial_state_bw=None, dtype=tf.float32, parallel_iterations=None, swap_memory=False, time_major=True, scope="encode")
+        outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=None, initial_state_bw=None, dtype=tf.float32, parallel_iterations=None, swap_memory=True, time_major=False, scope="encode")
         outputs = tf.concat(2, [outputs[0], outputs[1]])
+        tf.Print(outputs, [outputs], "wooHOOO")
         return outputs, output_states
 
     def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False):
@@ -189,13 +190,14 @@ class QASystem(object):
         Loads distributed word representations based on placeholder tokens
         :return:
         """
-        ##### Load embeddings - CURRENTLY USING LENGTH 100
-        pretrained_embeddings = np.load(self.config.flag.data_dir + "/glove.trimmed.100.npz")
+        ##### Load embeddings - CURRENTLY USING LENGTH 50
+        pretrained_embeddings = np.load(self.config.flag.data_dir + "/glove.trimmed.50.npz")
         # Do some stuff        
         with vs.variable_scope("embeddings"):
-            embedding = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
-            lookup_q = tf.nn.embedding_lookup(embedding, self.inputs_q_placeholder)
-            lookup_p = tf.nn.embedding_lookup(embedding, self.inputs_p_placeholder)
+            embedding_q = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
+            embedding_p = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
+            lookup_q = tf.nn.embedding_lookup(embedding_q, self.inputs_q_placeholder)
+            lookup_p = tf.nn.embedding_lookup(embedding_p, self.inputs_p_placeholder)
             self.embeddings_q = tf.reshape(lookup_q, [-1, self.config.flag.max_size_q, self.config.flag.embedding_size])
             self.embeddings_p = tf.reshape(lookup_p, [-1, self.config.flag.max_size_p, self.config.flag.embedding_size])
         
@@ -207,7 +209,6 @@ class QASystem(object):
         """
         input_feed = {}
         ## ASSUMING train_x is a tuple of (question, paragraph)
-        beep, boop = pad_sequences(train_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_p_placeholder], _ = pad_sequences(train_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(train_x[1], self.config.flag.max_size_q)
         
@@ -219,8 +220,7 @@ class QASystem(object):
 
         output_feed = [self.train_op, self.loss]
 
-        outputs = session.run(output_feed, input_feed)
-
+        outputs = session.run(output_feed, feed_dict=input_feed)
         return outputs
 
     def test(self, session, valid_x, valid_y):
@@ -353,13 +353,17 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
-
+        saver = tf.train.Saver()
+        
         for i in range(self.config.flag.epochs):
             # TODO shuffle data
             batch_size = 10
-            batch = range(len(dataset['train'][0]))
-            random.shuffle(batch)
-            for i in range(0,len(batch),batch_size):
+            batch = range(num_train)
+            
+            loss = 0 
+            cnt = 0
+            
+            for i in range(0,num_train,batch_size):
                 if(i+batch_size > len(batch)):
                     indices = batch[i:]
                 else:
@@ -367,7 +371,14 @@ class QASystem(object):
                 batchP = [dataset['train'][0][j] for j in indices]
                 batchQ = [dataset['train'][1][j] for j in indices]
                 batchA = [dataset['train'][2][j] for j in indices]
-                self.optimize(session, (batchP, batchQ), batchA)
-                return
+                _, batch_loss = self.optimize(session, (batchP, batchQ), batchA)
+                loss += batch_loss
+                count += 1
+                print(loss / count)
+            
+            save_path = saver.save(session, train_dir + "/epoch" + str(i) + ".ckpt")
+            print(save_path)
+
+            
 
 
