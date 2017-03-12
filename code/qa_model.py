@@ -207,7 +207,6 @@ class QASystem(object):
         """
         input_feed = {}
         ## ASSUMING train_x is a tuple of (question, paragraph)
-        beep, boop = pad_sequences(train_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_p_placeholder], _ = pad_sequences(train_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(train_x[1], self.config.flag.max_size_q)
         
@@ -347,21 +346,6 @@ class QASystem(object):
        
 
         # TODO - Figure this out        
-        batch_size = 10
-        batch = range(len(dataset['train']))
-
-        random.shuffle(batch)
-        for i in range(len(batch), batch_size):
-            if(i+batch_size > len(dataset['train'])):
-                indices = batch[i:]
-            else:
-                indices = batch[i:i+batch_size]
-            batchP = [dataset['train'][0][j] for j in indices]
-            batchQ = [dataset['train'][1][j] for j in indices]
-            batchA = [dataset['train'][2][j] for j in indices]
-        for p, q, a in dataset['train']:
-            self.optimize(session, (batchP, batchQ), batchA)
-
         tic = time.time()
         params = tf.trainable_variables()
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
