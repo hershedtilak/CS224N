@@ -234,15 +234,16 @@ class QASystem(object):
         """
         input_feed = {}
 
-        input_feed[self.input_p] = valid_x[0]
-        input_feed[self.input_q] = valid_x[1]
+        input_feed[self.inputs_p_placeholder], _ = pad_sequences(valid_x[0], self.config.flag.max_size_p)
+        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(valid_x[1], self.config.flag.max_size_q)
         
-        input_feed[self.output] = valid_y
+        input_feed[self.labels_answer_start] = [item[0] for item in valid_y]
+        input_feed[self.labels_answer_end] = [item[1] for item in valid_y]
         # fill in this feed_dictionary like:
         # input_feed['valid_x'] = valid_x
         ## Here, output feed should represent want we want to get from the session, in this case it should
         ## what the system predicts
-        output_feed = [self.a_s, self.a_e]
+        output_feed = [self.loss]
 
         outputs = session.run(output_feed, input_feed)
 
@@ -255,7 +256,10 @@ class QASystem(object):
         :return:
         """
         input_feed = {}
-
+        input_feed[self.inputs_p_placeholder], _ = pad_sequences(test_x[0], self.config.flag.max_size_p)
+        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(test_x[1], self.config.flag.max_size_q)
+        
+       
         # fill in this feed_dictionary like:
         # input_feed['test_x'] = test_x
 
@@ -289,8 +293,9 @@ class QASystem(object):
         valid_cost = 0
 
         for valid_x, valid_y in valid_dataset:
-          valid_cost = self.test(sess, valid_x, valid_y)
-
+          valid_cost = valid_cost + self.test(sess, valid_x, valid_y)
+        #average over num examples
+        valid_cost = float(valid_cost)/len(valid_dataset)
 
         return valid_cost
 
