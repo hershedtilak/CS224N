@@ -153,6 +153,9 @@ class QASystem(object):
             self.setup_loss()
             self.add_training_op(self.loss)
         # ==== set up training/updating procedure ====
+        
+        self.saver = tf.train.Saver()
+
         pass
 
 
@@ -191,7 +194,7 @@ class QASystem(object):
         :return:
         """
         ##### Load embeddings - CURRENTLY USING LENGTH 50
-        pretrained_embeddings = np.load(self.config.flag.data_dir + "/glove.trimmed.50.npz")
+        pretrained_embeddings = np.load(self.config.flag.data_dir + "/glove.trimmed.100.npz")
         # Do some stuff        
         with vs.variable_scope("embeddings"):
             embedding_q = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
@@ -353,16 +356,13 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
-        saver = tf.train.Saver()
-        
-        for i in range(self.config.flag.epochs):
+        batch_size = self.config.flag.batch_size
+        batch = range(num_train)
+        for k in range(self.config.flag.epochs):
             # TODO shuffle data
-            batch_size = 10
-            batch = range(num_train)
-            
             loss = 0 
             count = 0
-            
+            random.shuffle(batch)
             for i in range(0,num_train,batch_size):
                 if(i+batch_size > len(batch)):
                     indices = batch[i:]
@@ -376,7 +376,7 @@ class QASystem(object):
                 count += 1
                 
             logging.info("Loss for epoch " + str(float(loss) / count) + "\n")
-            save_path = saver.save(session, train_dir + "/epoch" + str(i) + ".ckpt")
+            save_path = self.saver.save(session, train_dir + "/epoch" + str(k) + ".ckpt")
             print(save_path)
 
             
