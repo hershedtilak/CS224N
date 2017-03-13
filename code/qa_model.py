@@ -93,7 +93,7 @@ class Encoder(object):
         return concatOutputs, output_states
 
     def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False):
-        self.attn_cell = GRUAttnCell(self.config.flag.state_size, prev_states)
+        self.attn_cell = GRUAttnCell(2*self.config.flag.state_size, prev_states)
         with vs.variable_scope(scope, reuse):
             outputs, output_states =  tf.nn.dynamic_rnn(self.attn_cell, inputs, dtype=tf.float32)
         return outputs, output_states
@@ -116,11 +116,12 @@ class Decoder(object):
         :return:
         """
         h_q, H_q, h_p, H_p = knowledge_rep
-        print("========={}========".format(h_q[0].c))
+        #h_q = tf.reshape(h_q, [-1, 2*self.config.flag.output_size])
+        #h_p = tf.reshape(h_p, [-1, 2*self.config.flag.output_size])
         with vs.variable_scope("answer_start"):
-            a_s = tf.nn.rnn_cell._linear([h_q[0].c, h_p[0].c], self.config.flag.output_size, True, 1.0)
+            a_s = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
         with vs.variable_scope("answer_end"):
-            a_e = tf.nn.rnn_cell._linear([h_q[0].c, h_p[0].c], self.config.flag.output_size, True, 1.0)
+            a_e = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
         return (a_s, a_e)
 
 # TODO
@@ -168,9 +169,14 @@ class QASystem(object):
         """
         
         H_q, h_q  = self.encoder.encode(self.embeddings_q, self.sequence_length_q_placeholder, (None, None), scope="question")
+        h_q_concat = tf.concat(1, [h_q[0].h, h_q[1].h])
+
         H_p_noAttn, h_p_noAttn = self.encoder.encode(self.embeddings_p, self.sequence_length_p_placeholder, h_q, scope="paragraph")
-        #H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, H_q_concat)
-        knowledge_rep = (h_q, H_q, h_p_noAttn, H_p_noAttn)
+        h_p_noAttnconcat = tf.concat(1, [h_p_noAttn[0].h, h_p_noAttn[1].h])
+        
+        H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, h_q_concat)
+
+        knowledge_rep = (h_q_concat, H_q, h_p_attn, H_p_attn)
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
