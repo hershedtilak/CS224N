@@ -186,8 +186,9 @@ class QASystem(object):
         """
         ##### LOSS ASSUMING OUTPUT IS PAIR OF TWO INTEGERS #####
         with vs.variable_scope("loss"):
-            l1 = ssce(self.a_s, self.labels_answer_start)
-            l2 = ssce(self.a_e, self.labels_answer_end)
+            eps = 1e-8
+            l1 = ssce(self.a_s+eps, self.labels_answer_start)
+            l2 = ssce(self.a_e+eps, self.labels_answer_end)
             self.loss = tf.reduce_mean(l1+l2)
 
     def add_training_op(self, loss):
