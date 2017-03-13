@@ -299,7 +299,7 @@ class QASystem(object):
 
         return valid_cost
 
-    def evaluate_answer(self, session, dataset, sample=100, log=False):
+    def evaluate_answer(self, session, dataset, sample=100, log=False, datatype='val'):
         """
         Evaluate the model's performance using the harmonic mean of F1 and Exact Match (EM)
         with the set of true answer labels
@@ -317,11 +317,28 @@ class QASystem(object):
 
         f1 = 0.
         em = 0.
+        fname = "../.."
+        for dataset_type in ['train', 'val']:
+        with open(os.path.join(FLAGS.data_dir, "%s.context"%datatype)) as f:
+            data_paragraph = [map(int,line.split()) for line in f.read().splitlines()]
+        with open(os.path.join(FLAGS.data_dir, "%s.answer"%datatype)) as f:
+            data_answer = [map(int,line.split()) for line in f.read().splitlines()]
+        ground_truth= (data_paragraph, data_answer)
 
         if log:
             logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
-
+        for i in range(sample):
+            start, end = self.answer(session, (dataset[datatype][0][i], dataset[datatype][1][i], dataset[datatype][2][i]) )
+            prediciton = ground_truth[i][start:end]
+            gt = ground_truth[i]
+            f1_instance = f1_score(prediction, gt)
+            em_instance = exact_match_score(prediction, gt)
+            em = em + em_instance
+            f1 = f1 + f1_instance
+        em = em/float(sample)
+        f1 = f1/float(sample)
         return f1, em
+
 
     def train(self, session, dataset, train_dir):
         """
