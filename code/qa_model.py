@@ -17,6 +17,7 @@ from tensorflow.python.ops.nn import sparse_softmax_cross_entropy_with_logits as
 from qa_data import PAD_ID
 import random
 import os
+from tqdm import *
 
 logging.basicConfig(level=logging.INFO)
 
@@ -70,7 +71,7 @@ class Encoder(object):
         self.vocab_dim = vocab_dim
         self.config = config
 
-    def encode(self, inputs, sequence_length, encoder_state_input):
+    def encode(self, inputs, sequence_length, encoder_state_input, scope="encode"):
         """
         In a generalized encode function, you pass in your inputs,
         masks, and an initial
@@ -85,12 +86,10 @@ class Encoder(object):
                  It can be context-level representation, word-level representation,
                  or both.
         """        
-        tf.Print(inputs, [inputs],"here we go")
         cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
         cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
-        outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=None, initial_state_bw=None, dtype=tf.float32, parallel_iterations=None, swap_memory=True, time_major=False, scope="encode")
+        outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=encoder_state_input, initial_state_bw=encoder_state_input, dtype=tf.float32, parallel_iterations=None, swap_memory=True, time_major=False, scope=scope)
         outputs = tf.concat(2, [outputs[0], outputs[1]])
-        tf.Print(outputs, [outputs], "wooHOOO")
         return outputs, output_states
 
     def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False):
@@ -142,6 +141,7 @@ class QASystem(object):
         self.config = config
         self.inputs_p_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_p), name="inputs_p_placeholder")
         self.inputs_q_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_q), name="inputs_q_placeholder")
+        self.sequence_length_p_placeholder = tf.placeholder(tf.int32, shape=None, name="sequence_length_p")
         self.sequence_length_q_placeholder = tf.placeholder(tf.int32, shape=None, name="sequence_length_q")
         self.labels_answer_start = tf.placeholder(tf.int32, shape=None, name="answer_start")
         self.labels_answer_end = tf.placeholder(tf.int32, shape=None, name="answer_end")
@@ -167,10 +167,10 @@ class QASystem(object):
         to assemble your reading comprehension system!
         :return:
         """
-        # raise NotImplementedError("Connect all parts of your system here!")
-        h_q, H_q = self.encoder.encode(self.embeddings_q, self.sequence_length_q_placeholder, tf.zeros(self.config.flag.state_size))
-        h_p, H_p = self.encoder.encode_w_attn(self.embeddings_p, tf.zeros(self.config.flag.state_size))
-        knowledge_rep = (h_q, H_q, h_p, H_p)
+        H_q, h_q = self.encoder.encode(self.embeddings_q, self.sequence_length_q_placeholder, None, scope="question")
+        H_p_noAttn, h_p_noAttn = self.encoder.encode(self.embeddings_p, self.sequence_length_p_placeholder, h_q, scope="paragraph")
+        #H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, H_q)
+        knowledge_rep = (h_q, H_q, h_p_noAttn, H_p_noAttn)
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
@@ -198,10 +198,9 @@ class QASystem(object):
         pretrained_embeddings = np.load(self.config.flag.data_dir + "/glove.trimmed.100.npz")
         # Do some stuff        
         with vs.variable_scope("embeddings"):
-            embedding_q = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
-            embedding_p = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
-            lookup_q = tf.nn.embedding_lookup(embedding_q, self.inputs_q_placeholder)
-            lookup_p = tf.nn.embedding_lookup(embedding_p, self.inputs_p_placeholder)
+            embedding = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
+            lookup_q = tf.nn.embedding_lookup(embedding, self.inputs_q_placeholder)
+            lookup_p = tf.nn.embedding_lookup(embedding, self.inputs_p_placeholder)
             self.embeddings_q = tf.reshape(lookup_q, [-1, self.config.flag.max_size_q, self.config.flag.embedding_size])
             self.embeddings_p = tf.reshape(lookup_p, [-1, self.config.flag.max_size_p, self.config.flag.embedding_size])
         
@@ -213,7 +212,7 @@ class QASystem(object):
         """
         input_feed = {}
         ## ASSUMING train_x is a tuple of (question, paragraph)
-        input_feed[self.inputs_p_placeholder], _ = pad_sequences(train_x[0], self.config.flag.max_size_p)
+        input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder] = pad_sequences(train_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(train_x[1], self.config.flag.max_size_q)
         
         input_feed[self.labels_answer_start] = [item[0] for item in train_y]
@@ -235,7 +234,7 @@ class QASystem(object):
         """
         input_feed = {}
 
-        input_feed[self.inputs_p_placeholder], _ = pad_sequences(valid_x[0], self.config.flag.max_size_p)
+        input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder] = pad_sequences(valid_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(valid_x[1], self.config.flag.max_size_q)
         
         input_feed[self.labels_answer_start] = [item[0] for item in valid_y]
@@ -257,7 +256,7 @@ class QASystem(object):
         :return:
         """
         input_feed = {}
-        input_feed[self.inputs_p_placeholder], _ = pad_sequences(test_x[0], self.config.flag.max_size_p)
+        input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder] = pad_sequences(test_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(test_x[1], self.config.flag.max_size_q)
 
         # fill in this feed_dictionary like:
@@ -273,10 +272,10 @@ class QASystem(object):
 
         yp, yp2 = self.decode(session, test_x)
 
-        a_s = np.argmax(yp, axis=1)[0]
-        a_e = np.argmax(yp2, axis=1)[0]
+        a_s = np.argmax(yp, axis=1)
+        a_e = np.argmax(yp2, axis=1)
 
-        return (min(a_s, a_e), max(a_s, a_e))
+        return (a_s, a_e)
 
     def validate(self, sess, valid_dataset):
         """
@@ -326,7 +325,7 @@ class QASystem(object):
 
         for i in range(sample):
             start, end = self.answer(session, ([dataset[datatype][0][i]], [dataset[datatype][1][i]], [dataset[datatype][2][i]]) )
-            prediction = ' '.join(ground_truth[0][i][start:end])
+            prediction = ' '.join(ground_truth[0][i][start[0]:end[0]])
             gt = ' '.join(ground_truth[1][i])
             f1_instance = f1_score(prediction, gt)
             em_instance = exact_match_score(prediction, gt)
@@ -378,6 +377,7 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
+        num_train = 50
         batch_size = self.config.flag.batch_size
         batch = range(num_train)
         for k in range(self.config.flag.epochs):
@@ -385,7 +385,7 @@ class QASystem(object):
             loss = 0 
             count = 0
             random.shuffle(batch)
-            for i in range(0,num_train,batch_size):
+            for i in tqdm(range(0,num_train,batch_size)):
                 if(i+batch_size > len(batch)):
                     indices = batch[i:]
                 else:
@@ -396,6 +396,8 @@ class QASystem(object):
                 _, batch_loss = self.optimize(session, (batchP, batchQ), batchA)
                 loss += batch_loss
                 count += 1
+                if count % 1000:
+                    logging.info("Batch Loss: %f\n", batch_loss)
                 
             logging.info("Loss for epoch " + str(float(loss) / count) + "\n")
             save_path = self.saver.save(session, train_dir + "/epoch" + str(k) + ".ckpt")
