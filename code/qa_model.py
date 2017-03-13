@@ -92,10 +92,10 @@ class Encoder(object):
         concatOutputs = tf.concat(2, [outputs[0], outputs[1]])
         return concatOutputs, output_states
 
-    def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False):
+    def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False, initial_state=None):
         self.attn_cell = GRUAttnCell(2*self.config.flag.state_size, prev_states)
         with vs.variable_scope(scope, reuse):
-            outputs, output_states =  tf.nn.dynamic_rnn(self.attn_cell, inputs, dtype=tf.float32)
+            outputs, output_states =  tf.nn.dynamic_rnn(self.attn_cell, inputs,  initial_state=initial_state, dtype=tf.float32)
         return outputs, output_states
 
 class Decoder(object):
@@ -122,6 +122,9 @@ class Decoder(object):
             a_s = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
         with vs.variable_scope("answer_end"):
             a_e = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
+        print(a_s.get_shape())
+        print(a_e.get_shape())
+        
         return (a_s, a_e)
 
 # TODO
@@ -174,9 +177,8 @@ class QASystem(object):
         H_p_noAttn, h_p_noAttn = self.encoder.encode(self.embeddings_p, self.sequence_length_p_placeholder, h_q, scope="paragraph")
         h_p_noAttnconcat = tf.concat(1, [h_p_noAttn[0].h, h_p_noAttn[1].h])
         
-        H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, h_q_concat)
-
-        knowledge_rep = (h_q_concat, H_q, h_p_attn, H_p_attn)
+        H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, h_q_concat, initial_state=h_p_noAttnconcat)
+        knowledge_rep = (h_q_concat, H_q, h_p_noAttnconcat, H_p_noAttn)
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
@@ -186,15 +188,21 @@ class QASystem(object):
         """
         ##### LOSS ASSUMING OUTPUT IS PAIR OF TWO INTEGERS #####
         with vs.variable_scope("loss"):
-            eps = 1e-8
-            l1 = ssce(self.a_s+eps, self.labels_answer_start)
-            l2 = ssce(self.a_e+eps, self.labels_answer_end)
+            l1 = ssce(self.a_s, self.labels_answer_start)
+            l2 = ssce(self.a_e, self.labels_answer_end)
             self.loss = tf.reduce_mean(l1+l2)
 
     def add_training_op(self, loss):
         with vs.variable_scope("loss"):
             optimizer = tf.train.AdamOptimizer(self.config.flag.learning_rate)
-            self.train_op = optimizer.minimize(loss)
+            #self.train_op = optimizer.minimize(loss)
+            
+            tuples = optimizer.compute_gradients(loss)
+            grads = [entry[0] for entry in tuples]
+            vars = [entry[1] for entry in tuples]
+            grads, _ = tf.clip_by_global_norm(grads, self.config.flag.max_gradient_norm)
+            clipped_gradients = zip(grads, vars)
+            self.train_op = optimizer.apply_gradients(clipped_gradients)
             
     def setup_embeddings(self):
         """
@@ -384,7 +392,7 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
-        num_train = 50
+        #num_train = 50
         batch_size = self.config.flag.batch_size
         batch = range(num_train)
         for k in range(self.config.flag.epochs):
@@ -407,7 +415,7 @@ class QASystem(object):
                     logging.info("Batch Loss: %f\n", batch_loss)
                 
             logging.info("Loss for epoch " + str(float(loss) / count) + "\n")
-            save_path = self.saver.save(session, train_dir + "/epoch" + str(k) + ".ckpt")
+            save_path = self.saver.save(session, train_dir + "/" + str(int(tic)) + "_epoch" + str(k) + ".ckpt")
             print(save_path)
 
             
