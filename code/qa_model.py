@@ -86,16 +86,14 @@ class Encoder(object):
                  It can be context-level representation, word-level representation,
                  or both.
         """    
-        print("1===========%s============\n"%encoder_state_input[0])
-        print("2===========%s============\n"%encoder_state_input[1])
-        cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
-        cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
+        cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
+        cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
         outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=encoder_state_input[0], initial_state_bw=encoder_state_input[1], dtype=tf.float32, parallel_iterations=None, swap_memory=True, time_major=False, scope=scope)
         concatOutputs = tf.concat(2, [outputs[0], outputs[1]])
-        return concatOutputs, output_states, outputs
+        return concatOutputs, output_states
 
     def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False):
-        self.attn_cell = GRUAttnCell(self.config.flag.state_size, prev_states)
+        self.attn_cell = GRUAttnCell(2*self.config.flag.state_size, prev_states)
         with vs.variable_scope(scope, reuse):
             outputs, output_states =  tf.nn.dynamic_rnn(self.attn_cell, inputs, dtype=tf.float32)
         return outputs, output_states
@@ -118,8 +116,8 @@ class Decoder(object):
         :return:
         """
         h_q, H_q, h_p, H_p = knowledge_rep
-        h_q = tf.reshape(h_q, [-1, self.config.flag.max_size_q*2*self.config.flag.state_size])
-        h_p = tf.reshape(h_p, [-1, self.config.flag.max_size_p*self.config.flag.state_size])
+        #h_q = tf.reshape(h_q, [-1, 2*self.config.flag.output_size])
+        #h_p = tf.reshape(h_p, [-1, 2*self.config.flag.output_size])
         with vs.variable_scope("answer_start"):
             a_s = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
         with vs.variable_scope("answer_end"):
@@ -170,10 +168,15 @@ class QASystem(object):
         :return:
         """
         
-        H_q_concat, h_q, H_q_nonConcat  = self.encoder.encode(self.embeddings_q, self.sequence_length_q_placeholder, (None, None), scope="question")
-        H_p_noAttn, h_p_noAttn, _ = self.encoder.encode(self.embeddings_p, self.sequence_length_p_placeholder, h_q, scope="paragraph")
-        #H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, H_q_concat)
-        knowledge_rep = (h_q, H_q, h_p_noAttn, H_p_noAttn)
+        H_q, h_q  = self.encoder.encode(self.embeddings_q, self.sequence_length_q_placeholder, (None, None), scope="question")
+        h_q_concat = tf.concat(1, [h_q[0].h, h_q[1].h])
+
+        H_p_noAttn, h_p_noAttn = self.encoder.encode(self.embeddings_p, self.sequence_length_p_placeholder, h_q, scope="paragraph")
+        h_p_noAttnconcat = tf.concat(1, [h_p_noAttn[0].h, h_p_noAttn[1].h])
+        
+        H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, h_q_concat)
+
+        knowledge_rep = (h_q_concat, H_q, h_p_attn, H_p_attn)
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
