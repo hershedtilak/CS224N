@@ -84,12 +84,10 @@ class Encoder(object):
                  It can be context-level representation, word-level representation,
                  or both.
         """        
-        tf.Print(inputs, [inputs],"here we go")
         cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
         cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=False)
         outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=None, initial_state_bw=None, dtype=tf.float32, parallel_iterations=None, swap_memory=True, time_major=False, scope="encode")
         outputs = tf.concat(2, [outputs[0], outputs[1]])
-        tf.Print(outputs, [outputs], "wooHOOO")
         return outputs, output_states
 
     def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False):
@@ -320,9 +318,9 @@ class QASystem(object):
         fname = "../.."
         for dataset_type in ['train', 'val']:
         with open(os.path.join(FLAGS.data_dir, "%s.context"%datatype)) as f:
-            data_paragraph = [map(int,line.split()) for line in f.read().splitlines()]
+            data_paragraph = [line.split() for line in f.read().splitlines()]
         with open(os.path.join(FLAGS.data_dir, "%s.answer"%datatype)) as f:
-            data_answer = [map(int,line.split()) for line in f.read().splitlines()]
+            data_answer = [line.split() for line in f.read().splitlines()]
         ground_truth= (data_paragraph, data_answer)
 
         if log:
@@ -385,7 +383,7 @@ class QASystem(object):
             loss = 0 
             count = 0
             random.shuffle(batch)
-            for i in range(0,num_train,batch_size):
+            for i in tqdm(range(0,num_train,batch_size)):
                 if(i+batch_size > len(batch)):
                     indices = batch[i:]
                 else:
