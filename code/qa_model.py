@@ -17,7 +17,7 @@ from tensorflow.python.ops.nn import sparse_softmax_cross_entropy_with_logits as
 from qa_data import PAD_ID
 import random
 import os
-from tqdm import *
+#from tqdm import *
 
 logging.basicConfig(level=logging.INFO)
 
@@ -102,6 +102,8 @@ class Decoder(object):
     def __init__(self, output_size, config):
         self.output_size = output_size
         self.config = config
+    	self.start_cell = tf.nn.rnn_cell.LSTMCell(2*self.config.flag.state_size, state_is_tuple=True)
+    	self.end_cell = tf.nn.rnn_cell.LSTMCell(2*self.config.flag.state_size, state_is_tuple=True)
 
     def decode(self, knowledge_rep):
         """
@@ -115,15 +117,18 @@ class Decoder(object):
                               decided by how you choose to implement the encoder
         :return:
         """
-        h_q, H_q, h_p, H_p = knowledge_rep
+        h_q, H_q = knowledge_rep
+    	# run GRU/LSTM across pp
+    	with vs.variable_scope("Output_start"):
+    		output_start_states, final_state_start = tf.nn.dynamic_rnn(self.start_cell, H_q, dtype=tf.float32)
+    	with vs.variable_scope("Output_end"):
+    		output_end_states, final_state_end = tf.nn.dynamic_rnn(self.end_cell, output_start_states, dtype=tf.float32)
         #h_q = tf.reshape(h_q, [-1, 2*self.config.flag.output_size])
         #h_p = tf.reshape(h_p, [-1, 2*self.config.flag.output_size])
         with vs.variable_scope("answer_start"):
-            a_s = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
+            a_s = tf.nn.rnn_cell._linear(final_state_start, self.config.flag.output_size, True, 1.0)
         with vs.variable_scope("answer_end"):
-            a_e = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
-        print(a_s.get_shape())
-        print(a_e.get_shape())
+            a_e = tf.nn.rnn_cell._linear(final_state_end, self.config.flag.output_size, True, 1.0)
         
         return (a_s, a_e)
 
@@ -174,11 +179,11 @@ class QASystem(object):
         H_q, h_q  = self.encoder.encode(self.embeddings_q, self.sequence_length_q_placeholder, (None, None), scope="question")
         h_q_concat = tf.concat(1, [h_q[0].h, h_q[1].h])
 
-        H_p_noAttn, h_p_noAttn = self.encoder.encode(self.embeddings_p, self.sequence_length_p_placeholder, h_q, scope="paragraph")
-        h_p_noAttnconcat = tf.concat(1, [h_p_noAttn[0].h, h_p_noAttn[1].h])
-        
-        H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, h_q_concat, initial_state=h_p_noAttnconcat)
-        knowledge_rep = (h_q_concat, H_q, h_p_noAttnconcat, H_p_noAttn)
+        #H_p_noAttn, h_p_noAttn = self.encoder.encode(self.embeddings_p, self.sequence_length_p_placeholder, h_q, scope="paragraph")
+        #h_p_noAttnconcat = tf.concat(1, [h_p_noAttn[0].h, h_p_noAttn[1].h])
+        H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, H_q)
+    	H_pp_attn, h_pp_attn = self.encoder.encode_w_attn(H_p_attn, h_q_concat, scope="yoloswag")
+        knowledge_rep = (h_q_concat, H_q)
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
@@ -249,7 +254,6 @@ class QASystem(object):
         """
         input_feed = {}
 
-
         input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder] = pad_sequences(valid_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(valid_x[1], self.config.flag.max_size_q)
         
@@ -274,6 +278,7 @@ class QASystem(object):
         input_feed = {}
         input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder] = pad_sequences(test_x[0], self.config.flag.max_size_p)
         input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(test_x[1], self.config.flag.max_size_q)
+
         # fill in this feed_dictionary like:
         # input_feed['test_x'] = test_x
 
@@ -332,7 +337,6 @@ class QASystem(object):
         f1 = 0.
         em = 0.
         fname = "../.."
-
         with open(os.path.join(self.config.flag.data_dir, "%s.context"%datatype)) as f:
             data_paragraph = [line.split() for line in f.read().splitlines()]
         with open(os.path.join(self.config.flag.data_dir, "%s.answer"%datatype)) as f:
@@ -352,9 +356,8 @@ class QASystem(object):
         
         if log:
             logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
-
+        
         return f1, em
-
 
     def train(self, session, dataset, train_dir):
         """
@@ -386,7 +389,6 @@ class QASystem(object):
         # so that you can use your trained model to make predictions, or
         # even continue training
        
-
         # TODO - Figure this out        
         tic = time.time()
         params = tf.trainable_variables()
@@ -394,15 +396,16 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
-        #num_train = 50
+        num_train = 50
         batch_size = self.config.flag.batch_size
         batch = range(num_train)
         for k in range(self.config.flag.epochs):
+            logging.info("\n===== EPOCH " + str(k+1) + " =====")
             # TODO shuffle data
             loss = 0 
             count = 0
             random.shuffle(batch)
-            for i in tqdm(range(0,num_train,batch_size)):
+            for i in range(0,num_train,batch_size):
                 if(i+batch_size > len(batch)):
                     indices = batch[i:]
                 else:
@@ -413,13 +416,13 @@ class QASystem(object):
                 _, batch_loss = self.optimize(session, (batchP, batchQ), batchA)
                 loss += batch_loss
                 count += 1
-                if count % 1000:
-                    logging.info("Batch Loss: %f\n", batch_loss)
+                #if count % 1000:
+                #    logging.info("Batch Loss: %f\n", batch_loss)
                 
-            logging.info("Loss for epoch " + str(float(loss) / count) + "\n")
-            save_path = self.saver.save(session, train_dir + "/" + str(int(tic)) + "_epoch" + str(k) + ".ckpt")
-            print(save_path)
-
+            logging.info("Loss for epoch " + str(k+1) + ": " + str(float(loss) / count))
+            self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True)
+            #save_path = self.saver.save(session, train_dir + "/" + str(int(tic)) + "_epoch" + str(k) + ".ckpt")
+            #print(save_path)
             
 
 
