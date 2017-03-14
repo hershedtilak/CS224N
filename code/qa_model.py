@@ -122,8 +122,6 @@ class Decoder(object):
             a_s = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
         with vs.variable_scope("answer_end"):
             a_e = tf.nn.rnn_cell._linear([h_q, h_p], self.config.flag.output_size, True, 1.0)
-        print(a_s.get_shape())
-        print(a_e.get_shape())
         
         return (a_s, a_e)
 
@@ -385,17 +383,17 @@ class QASystem(object):
         # even continue training
        
         # TODO - Figure this out        
-
         tic = time.time()
         params = tf.trainable_variables()
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
-        #num_train = 50
+        num_train = 50
         batch_size = self.config.flag.batch_size
         batch = range(num_train)
         for k in range(self.config.flag.epochs):
+            logging.info("\n===== EPOCH " + str(k+1) + " =====")
             # TODO shuffle data
             loss = 0 
             count = 0
@@ -411,13 +409,13 @@ class QASystem(object):
                 _, batch_loss = self.optimize(session, (batchP, batchQ), batchA)
                 loss += batch_loss
                 count += 1
-                if count % 1000:
-                    logging.info("Batch Loss: %f\n", batch_loss)
+                #if count % 1000:
+                #    logging.info("Batch Loss: %f\n", batch_loss)
                 
-            logging.info("Loss for epoch " + str(float(loss) / count) + "\n")
+            logging.info("Loss for epoch " + str(k+1) + ": " + str(float(loss) / count))
+            self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True)
             save_path = self.saver.save(session, train_dir + "/" + str(int(tic)) + "_epoch" + str(k) + ".ckpt")
-            print(save_path)
-
+            #print(save_path)
             
 
 
