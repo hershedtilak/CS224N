@@ -30,7 +30,7 @@ tf.app.flags.DEFINE_float("learning_rate", 0.001, "Learning rate.")
 tf.app.flags.DEFINE_float("dropout", 0.15, "Fraction of units randomly dropped on non-recurrent connections.")
 tf.app.flags.DEFINE_integer("batch_size", 10, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("epochs", 0, "Number of epochs to train.")
-tf.app.flags.DEFINE_integer("state_size", 20, "Size of each model layer.")
+tf.app.flags.DEFINE_integer("state_size", 200, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("embedding_size", 100, "Size of the pretrained vocabulary.")
 tf.app.flags.DEFINE_integer("output_size", 750, "The output size of your model.")
 tf.app.flags.DEFINE_integer("keep", 0, "How many checkpoints to keep, 0 indicates keep all.")
@@ -42,6 +42,7 @@ tf.app.flags.DEFINE_string("dev_path", "data/squad/dev-v1.1.json", "Path to the 
 
 tf.app.flags.DEFINE_integer("max_size_p", 766, "Max size of the context")
 tf.app.flags.DEFINE_integer("max_size_q", 60, "Max size of the question")
+tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_string("data_dir", "data/squad", "SQuAD directory (default ./data/squad)")
 
 config = Config(FLAGS)
@@ -52,6 +53,7 @@ def initialize_model(session, model, train_dir):
     if ckpt and (tf.gfile.Exists(ckpt.model_checkpoint_path) or tf.gfile.Exists(v2_path)):
         logging.info("Reading model parameters from %s" % ckpt.model_checkpoint_path)
         model.saver.restore(session, ckpt.model_checkpoint_path)
+        print(ckpt.model_checkpoint_path)
     else:
         logging.info("Created model with fresh parameters.")
         session.run(tf.global_variables_initializer())
@@ -192,7 +194,7 @@ def main(_):
     data_question = [map(int,line.split()) for line in question_data]
     data_uuid = question_uuid_data
     data_context_raw = [line.split() for line in context_data_raw]
-    dataset = (data_context[:10], data_question[:10], data_uuid[:10], data_context_raw[:10])
+    dataset = (data_context, data_question, data_uuid, data_context_raw)
 
 
     # ========= Model-specific =========
@@ -203,11 +205,13 @@ def main(_):
 
     qa = QASystem(encoder, decoder, config=config)
 
-    with tf.Session() as sess:
+    with tf.Session(config = tf.ConfigProto(device_count={'GPU':0})) as sess:
         train_dir = get_normalized_train_dir(FLAGS.train_dir)
         initialize_model(sess, qa, train_dir)
-        answers = generate_answers(sess, qa, dataset, rev_vocab)
-
+        idx = 0
+        while idx+qa.config.flag.batch_size < len(dataset[0]):
+            answers = generate_answers(sess, qa, (dataset[0][idx:idx+qa.config.flag.batch_size],dataset[1][idx:idx+qa.config.flag.batch_size],dataset[2][idx:idx+qa.config.flag.batch_size],dataset[3][idx:idx+qa.config.flag.batch_size]), rev_vocab)
+            idx += qa.config.flag.batch_size
         # write to json file to root dir
         with io.open('dev-prediction.json', 'w', encoding='utf-8') as f:
             f.write(unicode(json.dumps(answers, ensure_ascii=False)))
