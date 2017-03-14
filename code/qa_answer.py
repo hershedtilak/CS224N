@@ -20,6 +20,7 @@ from preprocessing.squad_preprocess import data_from_json, maybe_download, squad
 import qa_data
 
 import logging
+from qa_config import Config
 
 logging.basicConfig(level=logging.INFO)
 
@@ -39,12 +40,20 @@ tf.app.flags.DEFINE_string("vocab_path", "data/squad/vocab.dat", "Path to vocab 
 tf.app.flags.DEFINE_string("embed_path", "", "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
 tf.app.flags.DEFINE_string("dev_path", "data/squad/dev-v1.1.json", "Path to the JSON dev set to evaluate against (default: ./data/squad/dev-v1.1.json)")
 
+tf.app.flags.DEFINE_integer("max_size_p", 766, "Max size of the context")
+tf.app.flags.DEFINE_integer("max_size_q", 60, "Max size of the question")
+tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Clip gradients to this norm.")
+tf.app.flags.DEFINE_string("data_dir", "data/squad", "SQuAD directory (default ./data/squad)")
+
+config = Config(FLAGS)
+
 def initialize_model(session, model, train_dir):
     ckpt = tf.train.get_checkpoint_state(train_dir)
     v2_path = ckpt.model_checkpoint_path + ".index" if ckpt else ""
     if ckpt and (tf.gfile.Exists(ckpt.model_checkpoint_path) or tf.gfile.Exists(v2_path)):
         logging.info("Reading model parameters from %s" % ckpt.model_checkpoint_path)
         model.saver.restore(session, ckpt.model_checkpoint_path)
+        print(ckpt.model_checkpoint_path)
     else:
         logging.info("Created model with fresh parameters.")
         session.run(tf.global_variables_initializer())
@@ -72,6 +81,7 @@ def read_dataset(dataset, tier, vocab):
     context_data = []
     query_data = []
     question_uuid_data = []
+    context_data_raw = []
 
     for articles_id in tqdm(range(len(dataset['data'])), desc="Preprocessing {}".format(tier)):
         article_paragraphs = dataset['data'][articles_id]['paragraphs']
@@ -96,8 +106,9 @@ def read_dataset(dataset, tier, vocab):
                 context_data.append(' '.join(context_ids))
                 query_data.append(' '.join(qustion_ids))
                 question_uuid_data.append(question_uuid)
+                context_data_raw.append(context)
 
-    return context_data, query_data, question_uuid_data
+    return context_data, query_data, question_uuid_data, context_data_raw
 
 
 def prepare_dev(prefix, dev_filename, vocab):
@@ -105,9 +116,9 @@ def prepare_dev(prefix, dev_filename, vocab):
     dev_dataset = maybe_download(squad_base_url, dev_filename, prefix)
 
     dev_data = data_from_json(os.path.join(prefix, dev_filename))
-    context_data, question_data, question_uuid_data = read_dataset(dev_data, 'dev', vocab)
+    context_data, question_data, question_uuid_data, context_data_raw = read_dataset(dev_data, 'dev', vocab)
 
-    return context_data, question_data, question_uuid_data
+    return context_data, question_data, question_uuid_data, context_data_raw
 
 
 def generate_answers(sess, model, dataset, rev_vocab):
@@ -129,7 +140,13 @@ def generate_answers(sess, model, dataset, rev_vocab):
     :param rev_vocab: this is a list of vocabulary that maps index to actual words
     :return:
     """
+    
     answers = {}
+    preds = model.answer(sess, dataset)
+    for idx in range(len(preds[0])):
+        answers[dataset[2][idx]] = ' '.join(dataset[3][idx][preds[0][idx]:preds[1][idx]])
+    print('*******')
+    print(answers)
     # TODO
     return answers
 
@@ -158,6 +175,7 @@ def main(_):
 
     if not os.path.exists(FLAGS.log_dir):
         os.makedirs(FLAGS.log_dir)
+
     file_handler = logging.FileHandler(pjoin(FLAGS.log_dir, "log.txt"))
     logging.getLogger().addHandler(file_handler)
 
@@ -170,22 +188,30 @@ def main(_):
 
     dev_dirname = os.path.dirname(os.path.abspath(FLAGS.dev_path))
     dev_filename = os.path.basename(FLAGS.dev_path)
-    context_data, question_data, question_uuid_data = prepare_dev(dev_dirname, dev_filename, vocab)
-    dataset = (context_data, question_data, question_uuid_data)
+    context_data, question_data, question_uuid_data, context_data_raw = prepare_dev(dev_dirname, dev_filename, vocab)
+    
+    data_context = [map(int,line.split()) for line in context_data]
+    data_question = [map(int,line.split()) for line in question_data]
+    data_uuid = question_uuid_data
+    data_context_raw = [line.split() for line in context_data_raw]
+    dataset = (data_context, data_question, data_uuid, data_context_raw)
+
 
     # ========= Model-specific =========
     # You must change the following code to adjust to your model
 
-    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size)
-    decoder = Decoder(output_size=FLAGS.output_size)
+    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, config=config)
+    decoder = Decoder(output_size=FLAGS.output_size, config=config)
 
-    qa = QASystem(encoder, decoder)
+    qa = QASystem(encoder, decoder, config=config)
 
-    with tf.Session() as sess:
+    with tf.Session(config = tf.ConfigProto(device_count={'GPU':0})) as sess:
         train_dir = get_normalized_train_dir(FLAGS.train_dir)
         initialize_model(sess, qa, train_dir)
-        answers = generate_answers(sess, qa, dataset, rev_vocab)
-
+        idx = 0
+        while idx+qa.config.flag.batch_size < len(dataset[0]):
+            answers = generate_answers(sess, qa, (dataset[0][idx:idx+qa.config.flag.batch_size],dataset[1][idx:idx+qa.config.flag.batch_size],dataset[2][idx:idx+qa.config.flag.batch_size],dataset[3][idx:idx+qa.config.flag.batch_size]), rev_vocab)
+            idx += qa.config.flag.batch_size
         # write to json file to root dir
         with io.open('dev-prediction.json', 'w', encoding='utf-8') as f:
             f.write(unicode(json.dumps(answers, ensure_ascii=False)))
