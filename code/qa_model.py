@@ -102,8 +102,8 @@ class Decoder(object):
     def __init__(self, output_size, config):
         self.output_size = output_size
         self.config = config
-    	self.start_cell = tf.nn.rnn_cell.LSTMCell(2*self.config.flag.state_size, state_is_tuple=True)
-    	self.end_cell = tf.nn.rnn_cell.LSTMCell(2*self.config.flag.state_size, state_is_tuple=True)
+    	self.start_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
+    	self.end_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
 
     def decode(self, knowledge_rep):
         """
@@ -117,7 +117,7 @@ class Decoder(object):
                               decided by how you choose to implement the encoder
         :return:
         """
-        h_q, H_q = knowledge_rep
+        H_q = knowledge_rep
     	# run GRU/LSTM across pp
     	with vs.variable_scope("Output_start"):
     		output_start_states, final_state_start = tf.nn.dynamic_rnn(self.start_cell, H_q, dtype=tf.float32)
@@ -183,7 +183,7 @@ class QASystem(object):
         #h_p_noAttnconcat = tf.concat(1, [h_p_noAttn[0].h, h_p_noAttn[1].h])
         H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, H_q)
     	H_pp_attn, h_pp_attn = self.encoder.encode_w_attn(H_p_attn, h_q_concat, scope="yoloswag")
-        knowledge_rep = (h_q_concat, H_q)
+        knowledge_rep = H_pp_attn
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
@@ -396,7 +396,6 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
-        num_train = 50
         batch_size = self.config.flag.batch_size
         batch = range(num_train)
         for k in range(self.config.flag.epochs):
