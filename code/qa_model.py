@@ -60,6 +60,8 @@ class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
                 ht = tf.nn.rnn_cell._linear(gru_out, self._num_units, True, 1.0)
                 ht = tf.expand_dims(ht, axis=1)
             scores = tf.reduce_sum(self.hs*ht, reduction_indices=2, keep_dims=True)
+            scores = tf.exp(scores - tf.reduce_max(scores, reduction_indices=0, keep_dims=True))
+            scores = scores / (1e-6 + tf.reduce_sum(scores, reduction_indices=0, keep_dims=True))
             context = tf.reduce_sum(self.hs*scores, reduction_indices=1)
             with vs.variable_scope("AttnConcat"):
                 out = tf.nn.relu(tf.nn.rnn_cell._linear([context, gru_out], self._num_units, True, 1.0))
@@ -76,7 +78,6 @@ class Encoder(object):
         In a generalized encode function, you pass in your inputs,
         masks, and an initial
         hidden state input into this function.
-
         :param inputs: Symbolic representations of your input
         :param masks: this is to make sure tf.nn.dynamic_rnn doesn't iterate
                       through masked steps
@@ -112,12 +113,11 @@ class Decoder(object):
         all paragraph tokens on which token should be
         the start of the answer span, and which should be
         the end of the answer span.
-
         :param knowledge_rep: it is a representation of the paragraph and question,
                               decided by how you choose to implement the encoder
         :return:
         """
-        h_q, H_q, h_p, H_p = knowledge_rep
+        H_p = knowledge_rep
         with vs.variable_scope("answer_start"):
             outputs_start, a_s = tf.nn.dynamic_rnn(self.start_cell, H_p, dtype=tf.float32)
             a_s = tf.nn.rnn_cell._linear(a_s, self.config.flag.output_size, True, 1.0)
@@ -132,7 +132,6 @@ class QASystem(object):
     def __init__(self, encoder, decoder, config=None, *args):
         """
         Initializes your System
-
         :param encoder: an encoder that you constructed in train.py
         :param decoder: a decoder that you constructed in train.py
         :param args: pass in more arguments as needed
@@ -178,7 +177,7 @@ class QASystem(object):
         
         H_p_attn, h_p_attn = self.encoder.encode_w_attn(H_p_noAttn, h_q_concat)
         
-        knowledge_rep = (h_q_concat, H_q, h_p_attn, H_p_attn)
+        knowledge_rep = H_p_attn
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
@@ -296,12 +295,9 @@ class QASystem(object):
         """
         Iterate through the validation dataset and determine what
         the validation cost is.
-
         This method calls self.test() which explicitly calculates validation cost.
-
         How you implement this function is dependent on how you design
         your data iteration function
-
         :return:
         """
         valid_cost = 0
@@ -317,10 +313,8 @@ class QASystem(object):
         """
         Evaluate the model's performance using the harmonic mean of F1 and Exact Match (EM)
         with the set of true answer labels
-
         This step actually takes quite some time. So we can only sample 100 examples
         from either training or testing set.
-
         :param session: session should always be centrally managed in train.py
         :param dataset: a representation of our data, in some implementations, you can
                         pass in multiple components (arguments) of one dataset to this function
@@ -357,20 +351,15 @@ class QASystem(object):
     def train(self, session, dataset, train_dir):
         """
         Implement main training loop
-
         TIPS:
         You should also implement learning rate annealing (look into tf.train.exponential_decay)
         Considering the long time to train, you should save your model per epoch.
-
         More ambitious appoarch can include implement early stopping, or reload
         previous models if they have higher performance than the current one
-
         As suggested in the document, you should evaluate your training progress by
         printing out information every fixed number of iterations.
-
         We recommend you evaluate your model performance on F1 and EM instead of just
         looking at the cost.
-
         :param session: it should be passed in from train.py
         :param dataset: a representation of our data, in some implementations, you can
                         pass in multiple components (arguments) of one dataset to this function
@@ -391,7 +380,7 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
-        num_train = 50
+        #num_train = 50
         batch_size = self.config.flag.batch_size
         batch = range(num_train)
         for k in range(self.config.flag.epochs):
@@ -411,13 +400,11 @@ class QASystem(object):
                 _, batch_loss = self.optimize(session, (batchP, batchQ), batchA)
                 loss += batch_loss
                 count += 1
-                #if count % 1000:
-                #    logging.info("Batch Loss: %f\n", batch_loss)
+                #print("Batch Loss: {}".format(batch_loss))
+                if count % 1000:
+                    logging.info("Batch Loss: %f\n", batch_loss)
                 
             logging.info("Loss for epoch " + str(k+1) + ": " + str(float(loss) / count))
             self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True)
             save_path = self.saver.save(session, train_dir + "/" + str(int(tic)) + "_epoch" + str(k) + ".ckpt")
             #print(save_path)
-            
-
-
