@@ -50,7 +50,7 @@ def get_optimizer(opt):
 
 
 class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
-    def __init__(self, num_units, encoder_output, scope=None):
+    def __init__(self, num_units, encoder_output, scope=None, initializer=None):
         self.hs = encoder_output
         super(GRUAttnCell, self).__init__(num_units)
     def __call__(self, inputs, state, scope=None):
@@ -60,6 +60,8 @@ class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
                 ht = tf.nn.rnn_cell._linear(gru_out, self._num_units, True, 1.0)
                 ht = tf.expand_dims(ht, axis=1)
             scores = tf.reduce_sum(self.hs*ht, reduction_indices=2, keep_dims=True)
+            scores = tf.exp(scores - tf.reduce_max(scores, reduction_indices=0, keep_dims=True))
+            scores = scores / (1e-6 + tf.reduce_sum(scores, reduction_indices=0, keep_dims=True))
             context = tf.reduce_sum(self.hs*scores, reduction_indices=1)
             with vs.variable_scope("AttnConcat"):
                 out = tf.nn.relu(tf.nn.rnn_cell._linear([context, gru_out], self._num_units, True, 1.0))
@@ -86,24 +88,24 @@ class Encoder(object):
                  It can be context-level representation, word-level representation,
                  or both.
         """    
-        cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
-        cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
+        cell_fw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True,initializer=tf.contrib.layers.xavier_initializer())
+        cell_bw = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True,initializer=tf.contrib.layers.xavier_initializer())
         outputs, output_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=sequence_length, initial_state_fw=encoder_state_input[0], initial_state_bw=encoder_state_input[1], dtype=tf.float32, parallel_iterations=None, swap_memory=True, time_major=False, scope=scope)
         concatOutputs = tf.concat(2, [outputs[0], outputs[1]])
         return concatOutputs, output_states
 
-    def encode_w_attn(self, inputs, prev_states, scope="encode", reuse=False, initial_state=None):
-        self.attn_cell = GRUAttnCell(2*self.config.flag.state_size, prev_states)
+    def encode_w_attn(self, inputs, prev_states,sequence_length=None, scope="encode", reuse=False, initial_state=None):
+        attn_cell = GRUAttnCell(2*self.config.flag.state_size, prev_states, initializer=tf.contrib.layers.xavier_initializer())
         with vs.variable_scope(scope, reuse):
-            outputs, output_states =  tf.nn.dynamic_rnn(self.attn_cell, inputs,  initial_state=initial_state, dtype=tf.float32)
+            outputs, output_states =  tf.nn.dynamic_rnn(attn_cell, inputs,sequence_length=sequence_length, initial_state=initial_state, dtype=tf.float32)
         return outputs, output_states
 
 class Decoder(object):
     def __init__(self, output_size, config):
         self.output_size = output_size
         self.config = config
-    	self.start_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
-    	self.end_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
+    	self.start_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True,initializer=tf.contrib.layers.xavier_initializer())
+    	self.end_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True,initializer=tf.contrib.layers.xavier_initializer())
 
     def decode(self, knowledge_rep):
         """
@@ -122,14 +124,35 @@ class Decoder(object):
     	with vs.variable_scope("Output_start"):
     		output_start_states, final_state_start = tf.nn.dynamic_rnn(self.start_cell, H_q, dtype=tf.float32)
     	with vs.variable_scope("Output_end"):
-    		output_end_states, final_state_end = tf.nn.dynamic_rnn(self.end_cell, output_start_states, dtype=tf.float32)
+    		_, final_state_end = tf.nn.dynamic_rnn(self.end_cell, output_start_states, dtype=tf.float32)
         #h_q = tf.reshape(h_q, [-1, 2*self.config.flag.output_size])
         #h_p = tf.reshape(h_p, [-1, 2*self.config.flag.output_size])
+	
+	
         with vs.variable_scope("answer_start"):
-            a_s = tf.nn.rnn_cell._linear(final_state_start, self.config.flag.output_size, True, 1.0)
+            #a_s = tf.nn.rnn_cell._linear(final_state_start.h, self.config.flag.output_size, True, 1.0)
+	    
+	    W_1_start = tf.get_variable("W_1_start", shape=[self.config.flag.state_size, 256],initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float32)
+	    W_2_start = tf.get_variable("W_2_start", shape=[256, self.config.flag.output_size],initializer=tf.contrib.layers.xavier_initializer(),dtype=tf.float32)
+	    b_1_start = tf.get_variable("b_1_start", shape=[256],initializer=tf.constant_initializer(1),dtype=tf.float32)
+	    b_2_start = tf.get_variable("b_2_start", shape=[self.config.flag.output_size],initializer=tf.constant_initializer(1),dtype=tf.float32)
+	
+	    dense_1_start = tf.nn.relu(tf.matmul(final_state_start.h,W_1_start)+b_1_start)
+	    a_s = tf.nn.relu(tf.matmul(dense_1_start,W_2_start)+b_2_start)
+	    
         with vs.variable_scope("answer_end"):
-            a_e = tf.nn.rnn_cell._linear(final_state_end, self.config.flag.output_size, True, 1.0)
-        
+	    # what is being fed into the rnn_cell._linear is a tuple from the rnn output. It has both h and c components
+	    # this couses our model to consider both when creating output. This could be good, or unecessary		
+            #a_e = tf.nn.rnn_cell._linear(final_state_end.h, self.config.flag.output_size, True, 1.0)
+	    
+	    W_1_end = tf.get_variable("W_1_end", shape=[self.config.flag.state_size, 256],initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float32)
+	    W_2_end = tf.get_variable("W_2_end", shape=[256, self.config.flag.output_size],initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float32)
+	    b_1_end = tf.get_variable("b_1_end", shape=[256],initializer=tf.constant_initializer(1), dtype=tf.float32)
+	    b_2_end = tf.get_variable("b_2_end", shape=[self.config.flag.output_size],initializer=tf.constant_initializer(1), dtype=tf.float32)
+	
+	    dense_1_end = tf.nn.relu(tf.matmul(final_state_end.h,W_1_end)+b_1_end)
+	    a_e = tf.nn.relu(tf.matmul(dense_1_end,W_2_end)+b_2_end)
+	    
         return (a_s, a_e)
 
 # TODO
@@ -178,12 +201,12 @@ class QASystem(object):
         
         H_q, h_q  = self.encoder.encode(self.embeddings_q, self.sequence_length_q_placeholder, (None, None), scope="question")
         h_q_concat = tf.concat(1, [h_q[0].h, h_q[1].h])
-
+        print(H_q.get_shape())
         #H_p_noAttn, h_p_noAttn = self.encoder.encode(self.embeddings_p, self.sequence_length_p_placeholder, h_q, scope="paragraph")
         #h_p_noAttnconcat = tf.concat(1, [h_p_noAttn[0].h, h_p_noAttn[1].h])
-        H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, H_q)
-    	H_pp_attn, h_pp_attn = self.encoder.encode_w_attn(H_p_attn, h_q_concat, scope="yoloswag")
-        knowledge_rep = H_pp_attn
+        H_p_attn, h_p_attn = self.encoder.encode_w_attn(self.embeddings_p, H_q,sequence_length=self.sequence_length_p_placeholder, scope="attention_of_paragraph")
+    	H_pp_attn, h_pp_attn = self.encoder.encode_w_attn(H_p_attn, h_q_concat,sequence_length=self.sequence_length_q_placeholder, scope="attention_of_attention")
+        knowledge_rep = H_pp_attn #(h_p_noAttnconcat, h_q_concat)#H_pp_attn
         self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
@@ -199,15 +222,20 @@ class QASystem(object):
 
     def add_training_op(self, loss):
         with vs.variable_scope("loss"):
-            optimizer = tf.train.AdamOptimizer(self.config.flag.learning_rate)
+	    #TODO have learning rate decay with time
+	    g_step = tf.Variable(0, trainable=False)
+	    learning_rate = tf.train.exponential_decay(self.config.flag.learning_rate, g_step,int(40000)/self.config.flag.batch_size, self.config.flag.step_decay_rate, staircase=True)
+            optimizer = tf.train.AdamOptimizer()
             #self.train_op = optimizer.minimize(loss)
-            
             tuples = optimizer.compute_gradients(loss)
+	    #tuples = [(tf.clip_by_value(grad, -1e-30, 1e+30), var) for grad, var in tuples]
             grads = [entry[0] for entry in tuples]
             vars = [entry[1] for entry in tuples]
+	    #self.mygrads = grads
             grads, _ = tf.clip_by_global_norm(grads, self.config.flag.max_gradient_norm)
             clipped_gradients = zip(grads, vars)
-            self.train_op = optimizer.apply_gradients(clipped_gradients)
+            self.outGrad = tf.global_norm(grads)
+            self.train_op = optimizer.apply_gradients(clipped_gradients, global_step=g_step)
             
     def setup_embeddings(self):
         """
@@ -241,7 +269,7 @@ class QASystem(object):
         # fill in this feed_dictionary like:
         # input_feed['train_x'] = train_x
 
-        output_feed = [self.train_op, self.loss]
+        output_feed = [self.train_op, self.loss, self.outGrad]
 
         outputs = session.run(output_feed, feed_dict=input_feed)
         return outputs
@@ -294,7 +322,7 @@ class QASystem(object):
 
         a_s = np.argmax(yp, axis=1)
         a_e = np.argmax(yp2, axis=1)
-
+	print(a_s, a_e)
         return (a_s, a_e)
 
     def validate(self, sess, valid_dataset):
@@ -345,17 +373,17 @@ class QASystem(object):
 
         for i in range(sample):
             start, end = self.answer(session, ([dataset[datatype][0][i]], [dataset[datatype][1][i]], [dataset[datatype][2][i]]) )
-            prediction = ' '.join(ground_truth[0][i][start[0]:end[0]])
+            prediction = ' '.join(ground_truth[0][i][start[0]:end[0]+1])
             gt = ' '.join(ground_truth[1][i])
             f1_instance = f1_score(prediction, gt)
             em_instance = exact_match_score(prediction, gt)
             em = em + em_instance
             f1 = f1 + f1_instance
-        em = 100 * em / float(sample)
-        f1 = 100 * f1 / float(sample)
+        em = 100. * em / float(sample)
+        f1 = 100. * f1 / float(sample)
         
         if log:
-            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
+            logging.info("F1: {}, EM: {}, for {} samples of {}".format(f1, em, sample, datatype))
         
         return f1, em
 
@@ -396,6 +424,7 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
+        #num_train =2
         batch_size = self.config.flag.batch_size
         batch = range(num_train)
         for k in range(self.config.flag.epochs):
@@ -412,15 +441,18 @@ class QASystem(object):
                 batchP = [dataset['train'][0][j] for j in indices]
                 batchQ = [dataset['train'][1][j] for j in indices]
                 batchA = [dataset['train'][2][j] for j in indices]
-                _, batch_loss = self.optimize(session, (batchP, batchQ), batchA)
+                _, batch_loss, gradNorm = self.optimize(session, (batchP, batchQ), batchA)
                 loss += batch_loss
                 count += 1
-                #if count % 1000:
-                #    logging.info("Batch Loss: %f\n", batch_loss)
+		#print("Gradients\n")
+		#print(mygrads)
+                if count % 1 ==0:
+                    logging.info("Batch Loss: %f    Grad Norm: %f \n", batch_loss, gradNorm)
                 
             logging.info("Loss for epoch " + str(k+1) + ": " + str(float(loss) / count))
-            self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True)
-            #save_path = self.saver.save(session, train_dir + "/" + str(int(tic)) + "_epoch" + str(k) + ".ckpt")
+            #self.evaluate_answer(session, dataset, num_train, log=True,datatype='train' )
+	    self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True,datatype='train' )
+            save_path = self.saver.save(session, train_dir + "/" + str(int(tic)) + "_epoch" + str(k) + ".ckpt")
             #print(save_path)
             
 
