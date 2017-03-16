@@ -134,13 +134,13 @@ class Encoder(object):
         self.config = config
         
     def encodeQ(self, inputs, seq_len, scope="encodeQ"):
-        q_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
+        q_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
         with vs.variable_scope(scope):
             outputs, outputStates = tf.nn.dynamic_rnn(q_cell, inputs, sequence_length=seq_len, dtype=tf.float32)
         return outputs, outputStates
         
     def encodeP(self, inputs, seq_len, scope="encodeP"):
-        p_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
+        p_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
         with vs.variable_scope(scope):
             outputs, outputStates = tf.nn.dynamic_rnn(p_cell, inputs, sequence_length=seq_len, dtype=tf.float32)
         return outputs, outputStates
@@ -148,8 +148,8 @@ class Encoder(object):
     def encodeMatchLSTM(self, inputs, Hq, seq_len, scope="encodeMatchLSTM"):
         dh = self.config.flag.state_size
         
-        fwdLSTMCell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True)
-        bwdLSTMCell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True)
+        fwdLSTMCell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
+        bwdLSTMCell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
     
         matchLSTMCellFwd = MatchLSTMCell(self.config, Hq, fwdLSTMCell, "fwd", False)
         matchLSTMCellBwd = MatchLSTMCell(self.config, Hq, bwdLSTMCell, "bwd", True)
@@ -168,8 +168,63 @@ class Encoder(object):
         
         # outputs is Hr transposed
         return outputs, outputStates
-    
+   
 
+class PtrNetworkCell(tf.nn.rnn_cell.RNNCell):
+    def __init__(self, config, Hr, LSTMCell, scope=None):
+        self.config = config
+        self.dh = self.config.flag.state_size
+        self.batch_size = self.config.flag.batch_size
+        self._state_size = self.config.flag.max_size_p
+        self.p_size = self.config.flag.max_size_p
+        self.Hr = Hr
+        self.cell = LSTMCell
+        self.prev_state = (tf.constant(0, dtype=tf.float32, shape=[1, self.dh]), tf.constant(0, dtype=tf.float32, shape=[1, self.dh]))
+        
+    @property
+    def state_size(self):
+        return self._state_size
+
+    @property
+    def output_size(self):
+        return self._state_size
+        
+    def __call__(self, inputs, state, scope="ptr_network"):
+        dims = tf.shape(inputs)
+        batch_size = dims[0]
+        
+        with tf.variable_scope(scope):
+            dh = self.dh
+            xinit = tf.contrib.layers.xavier_initializer()
+            
+            # All of these variables are actually the transpose of what is said in the paper except v
+            V = tf.get_variable("V", [2*dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
+            W_a = tf.get_variable("W_a", [dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
+            b_a = tf.get_variable("b_a", [1, dh], initializer=tf.constant_initializer(0), dtype=np.float32)
+            v = tf.get_variable("v", [dh,1], initializer=tf.constant_initializer(0), dtype=np.float32)
+            c = tf.get_variable("c", [1, 1], initializer=tf.constant_initializer(0), dtype=np.float32)
+
+            # calculate F transpose (?, 61, 50))
+            Hr = tf.reshape(self.Hr, [-1, 2*dh])
+            left_arg = tf.matmul(Hr, V)                       #(?,50)
+            right_arg = tf.matmul(self.prev_state[0], W_a) + b_a    #(1,50)
+            F = tf.tanh(left_arg + right_arg)
+            
+            # calculate Beta (?, 61)
+            firstTerm = tf.reshape(tf.matmul(F, v), [-1,self.p_size])
+            secondTerm = c
+            beta_i = tf.nn.softmax(firstTerm + secondTerm)
+            
+            z = tf.reshape(tf.batch_matmul(tf.expand_dims(beta_i, axis=1), self.Hr), [-1,2*dh])
+
+            # pass z through appropriate LSTM
+            prev_state = (tf.tile(self.prev_state[0], [dims[0], 1]), tf.tile(self.prev_state[1], [dims[0], 1]))
+            output, new_state = self.cell(z, prev_state)
+            
+        # updates for next iteration
+        self.prev_state = new_state
+        return beta_i, beta_i
+  
 class Decoder(object):
     def __init__(self, output_size, config):
         self.output_size = output_size
@@ -177,7 +232,7 @@ class Decoder(object):
         self.start_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
         
 
-    def decodeAnswerPtr(self, Hr):
+    def decodeAnswerPtr(self, Hr, seq_len, scope="ptr_network"):
         """
         takes in a knowledge representation
         and output a probability estimation over
@@ -189,24 +244,21 @@ class Decoder(object):
         :return:
         """
         
-        state_size = self.config.flag.state_size
-        #print(Hr.get_shape())
-
-        # Hr_tilde is (?, 61, 100)
+        dh = self.config.flag.state_size
         dims = tf.shape(Hr)
         batch_size = dims[0]
-        Hr_tilde = tf.concat(1, [Hr, tf.zeros((batch_size, 1, 2*state_size))])
-        #print(Hr_tilde.get_shape())
+        words = self.config.flag.max_size_p
+        inputs = Hr[:,0:2,:]
+        # get beta matrix        
+        cell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
+        ptrNetworkCell = PtrNetworkCell(self.config, Hr, cell)     
+        with vs.variable_scope(scope):
+            betaMatrix, outputStates = tf.nn.dynamic_rnn(ptrNetworkCell, inputs, sequence_length=seq_len, dtype=tf.float32)
         
-        H_p = Hr
-        
-        with vs.variable_scope("answer_start"):
-            outputs_start, a_s = tf.nn.dynamic_rnn(self.start_cell, H_p, dtype=tf.float32)
-            a_s = tf.nn.rnn_cell._linear(a_s, self.config.flag.output_size, True, 1.0)
-        with vs.variable_scope("answer_end"):
-            outputs_end, a_e = tf.nn.dynamic_rnn(self.start_cell, outputs_start, dtype=tf.float32)
-            a_e = tf.nn.rnn_cell._linear(a_e, self.config.flag.output_size, True, 1.0)
-        
+        # get a_s and a_e from beta matrix
+        a_s = betaMatrix[:,0,:]
+        a_e = betaMatrix[:,1,:]   
+
         return (a_s, a_e)
 
 
@@ -254,10 +306,10 @@ class QASystem(object):
         Hp, _ = self.encoder.encodeP(self.embeddings_p, self.sequence_length_p_placeholder)
                 
         # Match LSTM layer
-        Hr, hr = self.encoder.encodeMatchLSTM(Hp, Hq, self.sequence_length_p_placeholder)
+        Hr, _ = self.encoder.encodeMatchLSTM(Hp, Hq, self.sequence_length_p_placeholder)
         
         # Answer Pointer Layer
-        self.a_s, self.a_e = self.decoder.decodeAnswerPtr(Hr)
+        self.a_s, self.a_e = self.decoder.decodeAnswerPtr(Hr, self.sequence_length_p_placeholder)
 
     def setup_loss(self):
         """
@@ -271,13 +323,19 @@ class QASystem(object):
 
     def add_training_op(self, loss):
         with vs.variable_scope("loss"):
-            optimizer = tf.train.AdamOptimizer(self.config.flag.learning_rate)            
+            g_step = tf.Variable(0, trainable=False)
+            learning_rate = tf.train.exponential_decay(self.config.flag.learning_rate, g_step,int(40000)/self.config.flag.batch_size, self.config.flag.step_decay_rate, staircase=True)
+            optimizer = tf.train.AdamOptimizer()
             tuples = optimizer.compute_gradients(loss)
             grads = [entry[0] for entry in tuples]
             vars = [entry[1] for entry in tuples]
             grads, _ = tf.clip_by_global_norm(grads, self.config.flag.max_gradient_norm)
             clipped_gradients = zip(grads, vars)
-            self.train_op = optimizer.apply_gradients(clipped_gradients)
+            
+            self.outGrad = tf.global_norm(grads)
+            self.learning_rate = learning_rate
+
+            self.train_op = optimizer.apply_gradients(clipped_gradients, global_step=g_step)
             
     def setup_embeddings(self):
         """
@@ -286,7 +344,8 @@ class QASystem(object):
         """
         pretrained_embeddings = np.load(self.config.flag.data_dir + "/glove.trimmed.100.npz")
         with vs.variable_scope("embeddings"):
-            embedding = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
+            #embedding = tf.Variable(pretrained_embeddings['glove'], dtype=tf.float32)
+            embedding = tf.constant(pretrained_embeddings['glove'], dtype=tf.float32)
             lookup_q = tf.nn.embedding_lookup(embedding, self.inputs_q_placeholder)
             lookup_p = tf.nn.embedding_lookup(embedding, self.inputs_p_placeholder)
             self.embeddings_q = tf.reshape(lookup_q, [-1, self.config.flag.max_size_q, self.config.flag.embedding_size])
@@ -304,7 +363,7 @@ class QASystem(object):
         input_feed[self.labels_answer_start] = [item[0] for item in train_y]
         input_feed[self.labels_answer_end] = [item[1] for item in train_y]
 
-        output_feed = [self.train_op, self.loss]
+        output_feed = [self.train_op, self.loss, self.outGrad, self.learning_rate]
 
         outputs = session.run(output_feed, feed_dict=input_feed)
         
@@ -403,8 +462,8 @@ class QASystem(object):
             em_instance = exact_match_score(prediction, gt)
             em = em + em_instance
             f1 = f1 + f1_instance
-        em = 100 * em / float(sample)
-        f1 = 100 * f1 / float(sample)
+        em = 100. * em / float(sample)
+        f1 = 100. * f1 / float(sample)
         
         if log:
             logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
@@ -453,12 +512,12 @@ class QASystem(object):
                 batchP = [dataset['train'][0][j] for j in indices]
                 batchQ = [dataset['train'][1][j] for j in indices]
                 batchA = [dataset['train'][2][j] for j in indices]
-                _, batch_loss = self.optimize(session, (batchP, batchQ), batchA)
+                _, batch_loss, grad_norm, lr = self.optimize(session, (batchP, batchQ), batchA)
                 loss += batch_loss
                 count += 1
                 #print("Batch Loss: {}".format(batch_loss))
                 if count % 1000:
-                    logging.info("Batch Loss: %f\n", batch_loss)
+                    print("Batch Loss: {}, Gradient: {}, Learning Rate: {}".format(batch_loss, grad_norm, lr))
                 
             logging.info("Loss for epoch " + str(k+1) + ": " + str(float(loss) / count))
             self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True, datatype='train')
