@@ -175,7 +175,6 @@ class Decoder(object):
         self.output_size = output_size
         self.config = config
         self.start_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
-        self.end_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
         
 
     def decodeAnswerPtr(self, Hr):
@@ -205,7 +204,7 @@ class Decoder(object):
             outputs_start, a_s = tf.nn.dynamic_rnn(self.start_cell, H_p, dtype=tf.float32)
             a_s = tf.nn.rnn_cell._linear(a_s, self.config.flag.output_size, True, 1.0)
         with vs.variable_scope("answer_end"):
-            outputs_end, a_e = tf.nn.dynamic_rnn(self.end_cell, outputs_start, dtype=tf.float32)
+            outputs_end, a_e = tf.nn.dynamic_rnn(self.start_cell, outputs_start, dtype=tf.float32)
             a_e = tf.nn.rnn_cell._linear(a_e, self.config.flag.output_size, True, 1.0)
         
         return (a_s, a_e)
@@ -398,7 +397,7 @@ class QASystem(object):
 
         for i in range(sample):
             start, end = self.answer(session, ([dataset[datatype][0][i]], [dataset[datatype][1][i]], [dataset[datatype][2][i]]) )
-            prediction = ' '.join(ground_truth[0][i][start[0]:end[0]])
+            prediction = ' '.join(ground_truth[0][i][start[0]:end[0]+1])
             gt = ' '.join(ground_truth[1][i])
             f1_instance = f1_score(prediction, gt)
             em_instance = exact_match_score(prediction, gt)
@@ -437,7 +436,7 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
-        num_train = 50
+        num_train = 5
         batch_size = self.config.flag.batch_size
         batch = range(num_train)
         for k in range(self.config.flag.epochs):
@@ -462,6 +461,6 @@ class QASystem(object):
                     logging.info("Batch Loss: %f\n", batch_loss)
                 
             logging.info("Loss for epoch " + str(k+1) + ": " + str(float(loss) / count))
-            self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True)
+            self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True, datatype='train')
             save_path = self.saver.save(session, train_dir + "/" + str(int(tic)) + "_epoch" + str(k) + ".ckpt")
             #print(save_path)
