@@ -94,6 +94,7 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
 
             # right_side_G is (?,50)
             right_side_G = tf.matmul(inputs, W_p) + (tf.matmul(self.prev_state[1], W_r) + b_p)
+            right_side_G = tf.reshape(right_side_G, [-1, 1, dh])
             
             # left_side_G is (?,20,50)
             Hq = tf.reshape(self.Hq, [-1, dh])
@@ -115,11 +116,9 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
         
         # pass z through appropriate LSTM
         with tf.variable_scope(self.scope, reuse=False):
-            print(self.cell)
-            output, new_state = self.cell(z, self.prev_state)
-            print(z.get_shape())
-            print(output.get_shape())
-            assert False
+            dims = tf.shape(inputs)
+            prev_state = (tf.tile(self.prev_state[0], [dims[0], 1]), tf.tile(self.prev_state[1], [dims[0], 1]))
+            output, new_state = self.cell(z, prev_state)
             
         # updates for next iteration
         self.prev_state = new_state
@@ -158,7 +157,6 @@ class Encoder(object):
         
         with vs.variable_scope(scope):
             outputsFwd, outputStatesFwd = tf.nn.dynamic_rnn(matchLSTMCellFwd, inputs, sequence_length=seq_len, initial_state=tf.zeros([1, dh]), dtype=tf.float32)
-            
             outputsBwd, outputStatesBwd = tf.nn.dynamic_rnn(matchLSTMCellBwd, inputsRev, sequence_length=seq_len, initial_state=tf.zeros([1, dh]), dtype=tf.float32)
         
         outputsBwd = _reverse(outputsBwd, seq_lengths=seq_len, seq_dim=1, batch_dim=0)
@@ -175,6 +173,9 @@ class Decoder(object):
     def __init__(self, output_size, config):
         self.output_size = output_size
         self.config = config
+        self.start_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
+        self.end_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
+        
 
     def decodeAnswerPtr(self, Hr):
         """
@@ -188,15 +189,16 @@ class Decoder(object):
         :return:
         """
         
-        batch_size = self.config.flag.batch_size
         state_size = self.config.flag.state_size
         print(Hr.get_shape())
 
         # Hr_tilde is (?, 61, 100)
+        dims = tf.shape(Hr)
+        batch_size = dims[0]
         Hr_tilde = tf.concat(1, [Hr, tf.zeros((batch_size, 1, 2*state_size))])
         print(Hr_tilde.get_shape())
         
-        assert(False)
+        H_p = Hr
         
         with vs.variable_scope("answer_start"):
             outputs_start, a_s = tf.nn.dynamic_rnn(self.start_cell, H_p, dtype=tf.float32)
