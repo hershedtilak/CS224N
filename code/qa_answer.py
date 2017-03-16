@@ -27,12 +27,13 @@ logging.basicConfig(level=logging.INFO)
 FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_float("learning_rate", 0.001, "Learning rate.")
+tf.app.flags.DEFINE_float("step_decay_rate", 0.9, "rate at which learning rate decreases.")
 tf.app.flags.DEFINE_float("dropout", 0.15, "Fraction of units randomly dropped on non-recurrent connections.")
-tf.app.flags.DEFINE_integer("batch_size", 10, "Batch size to use during training.")
+tf.app.flags.DEFINE_integer("batch_size", 2, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("epochs", 0, "Number of epochs to train.")
-tf.app.flags.DEFINE_integer("state_size", 200, "Size of each model layer.")
+tf.app.flags.DEFINE_integer("state_size", 50, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("embedding_size", 100, "Size of the pretrained vocabulary.")
-tf.app.flags.DEFINE_integer("output_size", 750, "The output size of your model.")
+tf.app.flags.DEFINE_integer("output_size", 766, "The output size of your model.")
 tf.app.flags.DEFINE_integer("keep", 0, "How many checkpoints to keep, 0 indicates keep all.")
 tf.app.flags.DEFINE_string("train_dir", "train", "Training directory (default: ./train).")
 tf.app.flags.DEFINE_string("log_dir", "log", "Path to store log and flag files (default: ./log)")
@@ -121,7 +122,7 @@ def prepare_dev(prefix, dev_filename, vocab):
     return context_data, question_data, question_uuid_data, context_data_raw
 
 
-def generate_answers(sess, model, dataset, rev_vocab):
+def generate_answers(answers, sess, model, dataset, rev_vocab):
     """
     Loop over the dev or test dataset and generate answer.
 
@@ -140,13 +141,11 @@ def generate_answers(sess, model, dataset, rev_vocab):
     :param rev_vocab: this is a list of vocabulary that maps index to actual words
     :return:
     """
-    
-    answers = {}
     preds = model.answer(sess, dataset)
     for idx in range(len(preds[0])):
         answers[dataset[2][idx]] = ' '.join(dataset[3][idx][preds[0][idx]:preds[1][idx]])
-    print('*******')
-    print(answers)
+    # print('*******')
+    # print(answers)
     # TODO
     return answers
 
@@ -209,9 +208,13 @@ def main(_):
         train_dir = get_normalized_train_dir(FLAGS.train_dir)
         initialize_model(sess, qa, train_dir)
         idx = 0
-        while idx+qa.config.flag.batch_size < len(dataset[0]):
-            answers = generate_answers(sess, qa, (dataset[0][idx:idx+qa.config.flag.batch_size],dataset[1][idx:idx+qa.config.flag.batch_size],dataset[2][idx:idx+qa.config.flag.batch_size],dataset[3][idx:idx+qa.config.flag.batch_size]), rev_vocab)
+        total_len = len(dataset[0])
+        total_len = 2
+        answers = {}
+        while idx+qa.config.flag.batch_size < total_len:
+            generate_answers(answers, sess, qa, (dataset[0][idx:idx+qa.config.flag.batch_size],dataset[1][idx:idx+qa.config.flag.batch_size],dataset[2][idx:idx+qa.config.flag.batch_size],dataset[3][idx:idx+qa.config.flag.batch_size]), rev_vocab)
             idx += qa.config.flag.batch_size
+            print("%s/%s"%(idx,total_len))
         # write to json file to root dir
         with io.open('dev-prediction.json', 'w', encoding='utf-8') as f:
             f.write(unicode(json.dumps(answers, ensure_ascii=False)))
