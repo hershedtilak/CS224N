@@ -30,13 +30,11 @@ def pad_sequences(data, max_length):
     zero_vector = PAD_ID
 
     for sentence in data:
-        ### YOUR CODE HERE (~4-6 lines)
         truncatedLength = min(len(sentence),max_length)
         padding_size = max_length - truncatedLength
         newSentence = sentence[0:truncatedLength] + [zero_vector]*padding_size
         ret_sen.append(newSentence)
         ret_length.append(truncatedLength)
-        ### END YOUR CODE ###
     return (ret_sen, ret_length)
 
 def get_optimizer(opt):
@@ -79,7 +77,8 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
         
     def __call__(self, inputs, state, scope="match_lstm"):
         self.prev_state = (state, state)
-
+        dims = tf.shape(inputs)
+        
         with tf.variable_scope(scope, reuse=self.reuse):
             dh = self._state_size
             xinit = tf.contrib.layers.xavier_initializer()
@@ -90,11 +89,12 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             W_r = tf.get_variable("W_r", [dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
             b_p = tf.get_variable("b_p", [1, dh], initializer=tf.constant_initializer(0), dtype=np.float32)
             w = tf.get_variable("w", [dh,1], initializer=tf.constant_initializer(0), dtype=np.float32)
-            b = tf.get_variable("b", [1], initializer=tf.constant_initializer(0), dtype=np.float32)
+            b = tf.get_variable("b", [1, 1], initializer=tf.constant_initializer(0), dtype=np.float32)
 
-            # right_side_G is (?,50)
+            # right_side_G is (?,20,50)
             right_side_G = tf.matmul(inputs, W_p) + (tf.matmul(self.prev_state[1], W_r) + b_p)
             right_side_G = tf.reshape(right_side_G, [-1, 1, dh])
+            right_side_G = tf.tile(right_side_G, [1, self.max_q_size, 1])
             
             # left_side_G is (?,20,50)
             Hq = tf.reshape(self.Hq, [-1, dh])
@@ -102,10 +102,11 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             
             # G (which is actually the transpose of G in the paper) is (?,20,50)
             G = tf.tanh(left_side_G + right_side_G)
-
+            
             # alpha_i_reshaped is the correct alpha (not transposed) and is (?, 1, 20)
             G_reshaped = tf.reshape(G, [-1, dh])
-            alpha_i = tf.nn.softmax(tf.matmul(G_reshaped, w) + b)
+            innerTerm = tf.reshape(tf.matmul(G_reshaped, w), [-1, self.max_q_size, 1])
+            alpha_i = tf.nn.softmax(innerTerm + tf.tile(b, [self.max_q_size,1]))
             alpha_i_reshaped = tf.reshape(alpha_i, [-1, 1, self.max_q_size])
             
             # bottom terms
@@ -116,7 +117,6 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
         
         # pass z through appropriate LSTM
         with tf.variable_scope(self.scope, reuse=False):
-            dims = tf.shape(inputs)
             prev_state = (tf.tile(self.prev_state[0], [dims[0], 1]), tf.tile(self.prev_state[1], [dims[0], 1]))
             output, new_state = self.cell(z, prev_state)
             
@@ -190,13 +190,13 @@ class Decoder(object):
         """
         
         state_size = self.config.flag.state_size
-        print(Hr.get_shape())
+        #print(Hr.get_shape())
 
         # Hr_tilde is (?, 61, 100)
         dims = tf.shape(Hr)
         batch_size = dims[0]
         Hr_tilde = tf.concat(1, [Hr, tf.zeros((batch_size, 1, 2*state_size))])
-        print(Hr_tilde.get_shape())
+        #print(Hr_tilde.get_shape())
         
         H_p = Hr
         
@@ -239,8 +239,6 @@ class QASystem(object):
             self.add_training_op(self.loss)
         
         self.saver = tf.train.Saver()
-
-        pass
 
 
     def setup_system(self):
