@@ -65,7 +65,7 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
         self.scope = scope
         self.reuse = reuse
         self.cell = LSTMCell
-        self.prev_state = (tf.zeros([1, self._state_size]), tf.zeros([1, self._state_size]))
+        self.prev_state = (tf.constant(0, dtype=tf.float32, shape=[1, self._state_size]), tf.constant(0, dtype=tf.float32, shape=[1, self._state_size]))
         
     @property
     def state_size(self):
@@ -76,7 +76,6 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
         return self._state_size
         
     def __call__(self, inputs, state, scope="match_lstm"):
-        self.prev_state = (state, state)
         dims = tf.shape(inputs)
         
         with tf.variable_scope(scope, reuse=self.reuse):
@@ -91,10 +90,11 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             w = tf.get_variable("w", [dh,1], initializer=tf.constant_initializer(0), dtype=np.float32)
             b = tf.get_variable("b", [1, 1], initializer=tf.constant_initializer(0), dtype=np.float32)
 
-            # right_side_G is (?,20,50)
-            right_side_G = tf.matmul(inputs, W_p) + (tf.matmul(self.prev_state[1], W_r) + b_p)
+            # right_side_G is (?,1,50) (will be broadcast)
+            right_arg = tf.matmul(self.prev_state[0], W_r) + b_p
+            left_arg = tf.matmul(inputs, W_p)
+            right_side_G = left_arg + right_arg
             right_side_G = tf.reshape(right_side_G, [-1, 1, dh])
-            right_side_G = tf.tile(right_side_G, [1, self.max_q_size, 1])
             
             # left_side_G is (?,20,50)
             Hq = tf.reshape(self.Hq, [-1, dh])
@@ -105,8 +105,10 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             
             # alpha_i_reshaped is the correct alpha (not transposed) and is (?, 1, 20)
             G_reshaped = tf.reshape(G, [-1, dh])
-            innerTerm = tf.reshape(tf.matmul(G_reshaped, w), [-1, self.max_q_size, 1])
-            alpha_i = tf.nn.softmax(innerTerm + tf.tile(b, [self.max_q_size,1]))
+            firstTerm = tf.reshape(tf.matmul(G_reshaped, w), [-1, self.max_q_size, 1])
+            secondTerm = b
+
+            alpha_i = tf.nn.softmax(firstTerm + secondTerm)
             alpha_i_reshaped = tf.reshape(alpha_i, [-1, 1, self.max_q_size])
             
             # bottom terms
@@ -122,7 +124,6 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             
         # updates for next iteration
         self.prev_state = new_state
-
         return output, new_state.h
     
 
@@ -156,8 +157,8 @@ class Encoder(object):
         inputsRev = _reverse(inputs, seq_lengths=seq_len, seq_dim=1, batch_dim=0)
         
         with vs.variable_scope(scope):
-            outputsFwd, outputStatesFwd = tf.nn.dynamic_rnn(matchLSTMCellFwd, inputs, sequence_length=seq_len, initial_state=tf.zeros([1, dh]), dtype=tf.float32)
-            outputsBwd, outputStatesBwd = tf.nn.dynamic_rnn(matchLSTMCellBwd, inputsRev, sequence_length=seq_len, initial_state=tf.zeros([1, dh]), dtype=tf.float32)
+            outputsFwd, outputStatesFwd = tf.nn.dynamic_rnn(matchLSTMCellFwd, inputs, sequence_length=seq_len, dtype=tf.float32)
+            outputsBwd, outputStatesBwd = tf.nn.dynamic_rnn(matchLSTMCellBwd, inputsRev, sequence_length=seq_len, dtype=tf.float32)
         
         outputsBwd = _reverse(outputsBwd, seq_lengths=seq_len, seq_dim=1, batch_dim=0)
         outputStatesBwd = _reverse(outputStatesBwd, seq_lengths=seq_len, seq_dim=1, batch_dim=0)
