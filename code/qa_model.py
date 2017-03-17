@@ -65,7 +65,6 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
         self.scope = scope
         self.reuse = reuse
         self.cell = LSTMCell
-        self.prev_state = (tf.constant(0, dtype=tf.float32, shape=[1, self._state_size]), tf.constant(0, dtype=tf.float32, shape=[1, self._state_size]))
         
     @property
     def state_size(self):
@@ -77,7 +76,7 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
         
     def __call__(self, inputs, state, scope="match_lstm"):
         dims = tf.shape(inputs)
-        
+                
         with tf.variable_scope(scope, reuse=self.reuse):
             dh = self._state_size
             xinit = tf.contrib.layers.xavier_initializer()
@@ -90,11 +89,12 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             w = tf.get_variable("w", [dh,1], initializer=tf.constant_initializer(0), dtype=np.float32)
             b = tf.get_variable("b", [1, 1], initializer=tf.constant_initializer(0), dtype=np.float32)
 
-            # right_side_G is (?,1,50) (will be broadcast)
-            right_arg = tf.matmul(self.prev_state[0], W_r) + b_p
+            # right_side_G is (?,20,50) (will be broadcast)
+            right_arg = tf.matmul(state[1], W_r) + tf.tile(b_p, [dims[0],1])
             left_arg = tf.matmul(inputs, W_p)
             right_side_G = left_arg + right_arg
             right_side_G = tf.reshape(right_side_G, [-1, 1, dh])
+            right_side_G = tf.tile(right_side_G, [1, self.max_q_size, 1])
             
             # left_side_G is (?,20,50)
             Hq = tf.reshape(self.Hq, [-1, dh])
@@ -105,26 +105,23 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             
             # alpha_i_reshaped is the correct alpha (not transposed) and is (?, 1, 20)
             G_reshaped = tf.reshape(G, [-1, dh])
-            firstTerm = tf.reshape(tf.matmul(G_reshaped, w), [-1, self.max_q_size, 1])
+            firstTerm = tf.reshape(tf.matmul(G_reshaped, w), [-1, 1, self.max_q_size])
             secondTerm = b
 
             alpha_i = tf.nn.softmax(firstTerm + secondTerm)
-            alpha_i_reshaped = tf.reshape(alpha_i, [-1, 1, self.max_q_size])
             
             # bottom terms
-            Hq_alpha = tf.reshape(tf.batch_matmul(alpha_i_reshaped, self.Hq), [-1,dh])
+            Hq_alpha = tf.reshape(tf.batch_matmul(alpha_i, self.Hq), [-1,dh])
             
             # z is (?, 100)
             z = tf.concat(1, [inputs, Hq_alpha])
         
         # pass z through appropriate LSTM
         with tf.variable_scope(self.scope, reuse=False):
-            prev_state = (tf.tile(self.prev_state[0], [dims[0], 1]), tf.tile(self.prev_state[1], [dims[0], 1]))
-            output, new_state = self.cell(z, prev_state)
+            output, new_state = self.cell(z, state)
             
         # updates for next iteration
-        self.prev_state = new_state
-        return output, new_state.h
+        return output, (new_state.c, new_state.h)
     
 
 class Encoder(object):
@@ -147,6 +144,7 @@ class Encoder(object):
     
     def encodeMatchLSTM(self, inputs, Hq, seq_len, scope="encodeMatchLSTM"):
         dh = self.config.flag.state_size
+        dims = tf.shape(inputs)
         
         fwdLSTMCell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
         bwdLSTMCell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
@@ -154,11 +152,14 @@ class Encoder(object):
         matchLSTMCellFwd = MatchLSTMCell(self.config, Hq, fwdLSTMCell, "fwd", False)
         matchLSTMCellBwd = MatchLSTMCell(self.config, Hq, bwdLSTMCell, "bwd", True)
         
+        initState = tf.tile(tf.constant(0, dtype=tf.float32, shape=[1, dh]), [dims[0], 1])
+        initStateTuple = (initState, initState)
+        
         inputsRev = _reverse(inputs, seq_lengths=seq_len, seq_dim=1, batch_dim=0)
         
         with vs.variable_scope(scope):
-            outputsFwd, outputStatesFwd = tf.nn.dynamic_rnn(matchLSTMCellFwd, inputs, sequence_length=seq_len, dtype=tf.float32)
-            outputsBwd, outputStatesBwd = tf.nn.dynamic_rnn(matchLSTMCellBwd, inputsRev, sequence_length=seq_len, dtype=tf.float32)
+            outputsFwd, outputStatesFwd = tf.nn.dynamic_rnn(matchLSTMCellFwd, inputs, initial_state=initStateTuple, sequence_length=seq_len, dtype=tf.float32)
+            outputsBwd, outputStatesBwd = tf.nn.dynamic_rnn(matchLSTMCellBwd, inputsRev, initial_state=initStateTuple, sequence_length=seq_len, dtype=tf.float32)
         
         outputsBwd = _reverse(outputsBwd, seq_lengths=seq_len, seq_dim=1, batch_dim=0)
         outputStatesBwd = _reverse(outputStatesBwd, seq_lengths=seq_len, seq_dim=1, batch_dim=0)
@@ -169,68 +170,12 @@ class Encoder(object):
         # outputs is Hr transposed
         return outputs, outputStates
    
-
-class PtrNetworkCell(tf.nn.rnn_cell.RNNCell):
-    def __init__(self, config, Hr, LSTMCell, scope=None):
-        self.config = config
-        self.dh = self.config.flag.state_size
-        self.batch_size = self.config.flag.batch_size
-        self._state_size = self.config.flag.max_size_p
-        self.p_size = self.config.flag.max_size_p
-        self.Hr = Hr
-        self.cell = LSTMCell
-        self.prev_state = (tf.constant(0, dtype=tf.float32, shape=[1, self.dh]), tf.constant(0, dtype=tf.float32, shape=[1, self.dh]))
-        
-    @property
-    def state_size(self):
-        return self._state_size
-
-    @property
-    def output_size(self):
-        return self._state_size
-        
-    def __call__(self, inputs, state, scope="ptr_network"):
-        dims = tf.shape(inputs)
-        batch_size = dims[0]
-        
-        with tf.variable_scope(scope):
-            dh = self.dh
-            xinit = tf.contrib.layers.xavier_initializer()
-            
-            # All of these variables are actually the transpose of what is said in the paper except v
-            V = tf.get_variable("V", [2*dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
-            W_a = tf.get_variable("W_a", [dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
-            b_a = tf.get_variable("b_a", [1, dh], initializer=tf.constant_initializer(0), dtype=np.float32)
-            v = tf.get_variable("v", [dh,1], initializer=tf.constant_initializer(0), dtype=np.float32)
-            c = tf.get_variable("c", [1, 1], initializer=tf.constant_initializer(0), dtype=np.float32)
-
-            # calculate F transpose (?, 61, 50))
-            Hr = tf.reshape(self.Hr, [-1, 2*dh])
-            left_arg = tf.matmul(Hr, V)                       #(?,50)
-            right_arg = tf.matmul(self.prev_state[0], W_a) + b_a    #(1,50)
-            F = tf.tanh(left_arg + right_arg)
-            
-            # calculate Beta (?, 61)
-            firstTerm = tf.reshape(tf.matmul(F, v), [-1,self.p_size])
-            secondTerm = c
-            beta_i = tf.nn.softmax(firstTerm + secondTerm)
-            
-            z = tf.reshape(tf.batch_matmul(tf.expand_dims(beta_i, axis=1), self.Hr), [-1,2*dh])
-
-            # pass z through appropriate LSTM
-            prev_state = (tf.tile(self.prev_state[0], [dims[0], 1]), tf.tile(self.prev_state[1], [dims[0], 1]))
-            output, new_state = self.cell(z, prev_state)
-            
-        # updates for next iteration
-        self.prev_state = new_state
-        return beta_i, beta_i
   
 class Decoder(object):
     def __init__(self, output_size, config):
         self.output_size = output_size
         self.config = config
-        self.start_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
-        
+        self.cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True)
 
     def decodeAnswerPtr(self, Hr, seq_len, scope="ptr_network"):
         """
@@ -245,20 +190,68 @@ class Decoder(object):
         """
         
         dh = self.config.flag.state_size
-        dims = tf.shape(Hr)
-        batch_size = dims[0]
-        words = self.config.flag.max_size_p
-        inputs = Hr[:,0:2,:]
-        # get beta matrix        
-        cell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
-        ptrNetworkCell = PtrNetworkCell(self.config, Hr, cell)     
-        with vs.variable_scope(scope):
-            betaMatrix, outputStates = tf.nn.dynamic_rnn(ptrNetworkCell, inputs, sequence_length=seq_len, dtype=tf.float32)
-        
-        # get a_s and a_e from beta matrix
-        a_s = betaMatrix[:,0,:]
-        a_e = betaMatrix[:,1,:]   
+        batch_size = tf.shape(Hr)[0]
+        p_size = self.config.flag.max_size_p
 
+        initState = tf.tile(tf.constant(0, dtype=tf.float32, shape=[1, dh]), [batch_size, 1])
+        h1 = (initState, initState)
+        
+        with tf.variable_scope(scope):
+            xinit = tf.contrib.layers.xavier_initializer()
+            
+            # All of these variables are actually the transpose of what is said in the paper except v
+            V = tf.get_variable("V", [2*dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
+            W_a = tf.get_variable("W_a", [dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
+            b_a = tf.get_variable("b_a", [1, dh], initializer=tf.constant_initializer(0), dtype=np.float32)
+            v = tf.get_variable("v", [dh,1], initializer=tf.constant_initializer(0), dtype=np.float32)
+            c = tf.get_variable("c", [1, 1], initializer=tf.constant_initializer(0), dtype=np.float32)
+
+            ############# start index #############
+            # calculate F transpose (?,p_size,dh)
+            Hr_reshaped = tf.reshape(Hr, [-1, 2*dh])
+            left_arg = tf.matmul(Hr_reshaped, V)
+            left_arg = tf.reshape(left_arg, [-1, p_size, dh])
+            right_arg = tf.matmul(h1[1], W_a) + tf.tile(b_a, [batch_size,1])
+            right_arg = tf.expand_dims(right_arg, axis=1)
+            right_arg = tf.tile(right_arg, [1, p_size, 1])
+            F1 = tf.tanh(left_arg + right_arg)
+            F1_reshaped = tf.reshape(F1, [-1, dh])
+            
+            # calculate Beta 0
+            firstTerm = tf.reshape(tf.matmul(F1_reshaped, v), [-1,p_size])
+            secondTerm = c
+            beta_0_out = firstTerm + secondTerm
+            beta_0 = tf.nn.softmax(beta_0_out)
+            
+            z1 = tf.reshape(tf.batch_matmul(tf.expand_dims(beta_0, axis=1), Hr), [-1,2*dh])
+
+            # pass z through appropriate LSTM
+            output, new_state = self.cell(z1, h1)
+            h2 = (new_state.c, new_state.h)
+            
+            ########### end index #################
+            # calculate F transpose
+            right_arg2 = tf.matmul(h2[1], W_a) + tf.tile(b_a, [batch_size,1])
+            right_arg2 = tf.expand_dims(right_arg2, axis=1)
+            right_arg2 = tf.tile(right_arg2, [1, p_size, 1])
+            F2 = tf.tanh(left_arg + right_arg2)
+            F2_reshaped = tf.reshape(F2, [-1, dh])
+            
+            # calculate Beta 0
+            firstTerm2 = tf.reshape(tf.matmul(F2_reshaped, v), [-1,p_size])
+            secondTerm2 = c
+            beta_1_out = firstTerm2 + secondTerm2
+            beta_1 = tf.nn.softmax(beta_1_out)
+            
+            z2 = tf.reshape(tf.batch_matmul(tf.expand_dims(beta_1, axis=1), Hr), [-1,2*dh])
+
+            # pass z through appropriate LSTM
+            tf.get_variable_scope().reuse_variables()
+            output2, new_state2 = self.cell(z2, h2)
+            
+        # get a_s and a_e from beta matrix
+        a_s = beta_0_out
+        a_e = beta_1_out
         return (a_s, a_e)
 
 
@@ -363,7 +356,7 @@ class QASystem(object):
         input_feed[self.labels_answer_start] = [item[0] for item in train_y]
         input_feed[self.labels_answer_end] = [item[1] for item in train_y]
 
-        output_feed = [self.train_op, self.loss, self.outGrad, self.learning_rate]
+        output_feed = [self.train_op, self.loss, self.outGrad, self.learning_rate, self.a_s, self.a_e, self.labels_answer_start, self.labels_answer_end]
 
         outputs = session.run(output_feed, feed_dict=input_feed)
         
@@ -495,7 +488,7 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         num_train = len(dataset['train'][2])
-        num_train = 5
+        num_train = self.config.flag.evaluate
         batch_size = self.config.flag.batch_size
         batch = range(num_train)
         for k in range(self.config.flag.epochs):
@@ -512,12 +505,12 @@ class QASystem(object):
                 batchP = [dataset['train'][0][j] for j in indices]
                 batchQ = [dataset['train'][1][j] for j in indices]
                 batchA = [dataset['train'][2][j] for j in indices]
-                _, batch_loss, grad_norm, lr = self.optimize(session, (batchP, batchQ), batchA)
+                _, batch_loss, grad_norm, lr, a_s, a_e, s, e = self.optimize(session, (batchP, batchQ), batchA)
                 loss += batch_loss
                 count += 1
-                #print("Batch Loss: {}".format(batch_loss))
-                if count % 1000:
-                    print("Batch Loss: {}, Gradient: {}, Learning Rate: {}".format(batch_loss, grad_norm, lr))
+                print("Batch Loss: {}, Gradient: {}, Learning Rate: {}".format(batch_loss, grad_norm, lr))
+                print("Predicted a_s={} a_e={}".format(np.argmax(a_s, axis=1),np.argmax(a_e, axis=1)))
+                print("Actual a_s={} a_e={}".format(s,e))
                 
             logging.info("Loss for epoch " + str(k+1) + ": " + str(float(loss) / count))
             self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True, datatype='train')
