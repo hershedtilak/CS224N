@@ -446,20 +446,27 @@ class QASystem(object):
         with open(os.path.join(self.config.flag.data_dir, "%s.answer"%datatype)) as f:
             data_answer = [line.split() for line in f.read().splitlines()]
         ground_truth= (data_paragraph, data_answer)
-
-        for i in tqdm(range(sample)):
-            start, end = self.answer(session, ([dataset[datatype][0][i]], [dataset[datatype][1][i]], [dataset[datatype][2][i]]) )
-            prediction = ' '.join(ground_truth[0][i][start[0]:end[0]+1])
-            gt = ' '.join(ground_truth[1][i])
-            f1_instance = f1_score(prediction, gt)
-            em_instance = exact_match_score(prediction, gt)
-            em = em + em_instance
-            f1 = f1 + f1_instance
-        em = 100. * em / float(sample)
-        f1 = 100. * f1 / float(sample)
+        i=0
+        while i < sample:
+            preds = self.answer(session, (dataset[datatype][0][i:i+self.config.flag.batch_size],dataset[datatype][1][i:i+self.config.flag.batch_size],dataset[datatype][2][i:i+self.config.flag.batch_size]))
+            for j in range(len(preds[0])):
+                prediction = ' '.join(ground_truth[0][i][preds[0][j]:(preds[1][j]+1)])
+                # print(preds[0][j])
+                # print(preds[1][j])
+                # print(ground_truth[0][i])
+                # print(prediction)
+                gt = ' '.join(ground_truth[1][i])
+                # print(gt)
+                f1_instance = f1_score(prediction, gt)
+                em_instance = exact_match_score(prediction, gt)
+                em = em + em_instance
+                f1 = f1 + f1_instance
+            i += self.config.flag.batch_size
+        em = 100 * em / float(sample)
+        f1 = 100 * f1 / float(sample)
         
         if log:
-            logging.info("Scores for dataset {} - F1: {}, EM: {}, for {} samples".format(datatype, f1, em, sample))
+            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
         
         return f1, em
 
