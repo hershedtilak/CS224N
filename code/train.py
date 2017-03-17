@@ -15,12 +15,12 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-tf.app.flags.DEFINE_float("learning_rate", 0.0001, "Learning rate.")
-tf.app.flags.DEFINE_float("step_decay_rate", 0.9, "rate at which learning rate decreases.")
+tf.app.flags.DEFINE_float("learning_rate", 0.001, "Learning rate.")
+tf.app.flags.DEFINE_float("step_decay_rate", 0.8, "rate at which learning rate decreases.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 15.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_float("dropout", 0.15, "Fraction of units randomly dropped on non-recurrent connections.")
 tf.app.flags.DEFINE_integer("batch_size", 64, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("epochs", 8, "Number of epochs to train.")
+tf.app.flags.DEFINE_integer("epochs", 12, "Number of epochs to train.")
 tf.app.flags.DEFINE_integer("state_size", 100, "Size of each model layer.")
 #tf.app.flags.DEFINE_integer("state_size", 50, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("output_size", 700, "The output size of your model.")
@@ -41,7 +41,7 @@ tf.app.flags.DEFINE_integer("keep", 0, "How many checkpoints to keep, 0 indicate
 tf.app.flags.DEFINE_string("vocab_path", "data/squad/vocab.dat", "Path to vocab file (default: ./data/squad/vocab.dat)")
 tf.app.flags.DEFINE_string("embed_path", "", "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
 
-tf.app.flags.DEFINE_integer("evaluate", 300, "how many examples in the dataset we look at")
+tf.app.flags.DEFINE_integer("evaluate", 100, "how many examples in the dataset we look at")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -129,7 +129,7 @@ def main(_):
         save_train_dir = get_normalized_train_dir(FLAGS.train_dir)
         qa.train(sess, dataset, save_train_dir)
 
-        #qa.evaluate_answer(sess, dataset, FLAGS.evaluate, log=True)
+        qa.evaluate_answer(sess, dataset, FLAGS.evaluate, log=True)
 
 if __name__ == "__main__":
     tf.app.run()
