@@ -466,7 +466,7 @@ class QASystem(object):
         f1 = 100 * f1 / float(sample)
         
         if log:
-            logging.info("Scores for dataset {} - F1: {}, EM: {}, for {} samples".format(datatype, f1, em, sample))
+            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
         
         return f1, em
 
