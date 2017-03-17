@@ -318,15 +318,14 @@ class QASystem(object):
         with vs.variable_scope("loss"):
             g_step = tf.Variable(0, trainable=False)
             learning_rate = tf.train.exponential_decay(self.config.flag.learning_rate, g_step,int(40000)/self.config.flag.batch_size, self.config.flag.step_decay_rate, staircase=True)
-            optimizer = tf.train.AdamOptimizer()
+            optimizer = tf.train.AdamOptimizer(learning_rate)
             tuples = optimizer.compute_gradients(loss)
             grads = [entry[0] for entry in tuples]
             vars = [entry[1] for entry in tuples]
+            self.outGrad = tf.global_norm(grads)        # FOR DEBUGGING
             grads, _ = tf.clip_by_global_norm(grads, self.config.flag.max_gradient_norm)
             clipped_gradients = zip(grads, vars)
-            
-            self.outGrad = tf.global_norm(grads)
-            self.learning_rate = learning_rate
+            self.learning_rate = learning_rate          # FOR DEBUGGING
 
             self.train_op = optimizer.apply_gradients(clipped_gradients, global_step=g_step)
             
@@ -355,6 +354,7 @@ class QASystem(object):
         input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(train_x[1], self.config.flag.max_size_q)
         input_feed[self.labels_answer_start] = [item[0] for item in train_y]
         input_feed[self.labels_answer_end] = [item[1] for item in train_y]
+        input_feed[self.dropout_placeholder] = self.config.flag.dropout
 
         output_feed = [self.train_op, self.loss, self.outGrad, self.learning_rate, self.a_s, self.a_e, self.labels_answer_start, self.labels_answer_end]
 
@@ -447,7 +447,7 @@ class QASystem(object):
             data_answer = [line.split() for line in f.read().splitlines()]
         ground_truth= (data_paragraph, data_answer)
 
-        for i in range(sample):
+        for i in tqdm(range(sample)):
             start, end = self.answer(session, ([dataset[datatype][0][i]], [dataset[datatype][1][i]], [dataset[datatype][2][i]]) )
             prediction = ' '.join(ground_truth[0][i][start[0]:end[0]+1])
             gt = ' '.join(ground_truth[1][i])
@@ -459,7 +459,7 @@ class QASystem(object):
         f1 = 100. * f1 / float(sample)
         
         if log:
-            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
+            logging.info("Scores for dataset {} - F1: {}, EM: {}, for {} samples".format(datatype, f1, em, sample))
         
         return f1, em
 
@@ -514,5 +514,6 @@ class QASystem(object):
                 
             logging.info("Loss for epoch " + str(k+1) + ": " + str(float(loss) / count))
             self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True, datatype='train')
+            self.evaluate_answer(session, dataset, self.config.flag.evaluate, log=True, datatype='val')
             save_path = self.saver.save(session, train_dir + "/" + str(int(tic)) + "_epoch" + str(k) + ".ckpt")
             #print(save_path)
