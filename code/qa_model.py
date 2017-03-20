@@ -25,6 +25,7 @@ logging.basicConfig(level=logging.INFO)
 def pad_sequences(data, max_length):
     ret_sen = []
     ret_length = []
+    ret_mask = []
 
     # Use this zero vector when padding sequences.
     zero_vector = PAD_ID
@@ -33,9 +34,11 @@ def pad_sequences(data, max_length):
         truncatedLength = min(len(sentence),max_length)
         padding_size = max_length - truncatedLength
         newSentence = sentence[0:truncatedLength] + [zero_vector]*padding_size
+        maskingSeq = [True]*truncatedLength + [False]*padding_size
         ret_sen.append(newSentence)
         ret_length.append(truncatedLength)
-    return (ret_sen, ret_length)
+        ret_mask.append(maskingSeq)
+    return (ret_sen, ret_length, ret_mask)
 
 def get_optimizer(opt):
     if opt == "adam":
@@ -82,7 +85,7 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             xinit = tf.contrib.layers.xavier_initializer()
             
             # All of these variables are actually the transpose of what is said in the paper except w
-            W_q = tf.get_variable("W_q", [dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
+            W_q = tf.get_variable("W_q", [2*dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
             W_p = tf.get_variable("W_p", [dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
             W_r = tf.get_variable("W_r", [dh, dh], initializer=tf.contrib.layers.xavier_initializer(), dtype=np.float32)
             b_p = tf.get_variable("b_p", [1, dh], initializer=tf.uniform_unit_scaling_initializer(), dtype=np.float32)
@@ -97,7 +100,7 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             right_side_G = tf.tile(right_side_G, [1, self.max_q_size, 1])
             
             # left_side_G is (?,20,50)
-            Hq = tf.reshape(self.Hq, [-1, dh])
+            Hq = tf.reshape(self.Hq, [-1, 2*dh])
             left_side_G = tf.reshape(tf.matmul(Hq, W_q), [-1, self.max_q_size, dh])
             
             # G (which is actually the transpose of G in the paper) is (?,20,50)
@@ -111,7 +114,7 @@ class MatchLSTMCell(tf.nn.rnn_cell.RNNCell):
             alpha_i = tf.nn.softmax(firstTerm + secondTerm)
             
             # bottom terms
-            Hq_alpha = tf.reshape(tf.batch_matmul(alpha_i, self.Hq), [-1,dh])
+            Hq_alpha = tf.reshape(tf.batch_matmul(alpha_i, self.Hq), [-1, 2*dh])
             
             # z is (?, 100)
             z = tf.concat(1, [inputs, Hq_alpha])
@@ -131,10 +134,15 @@ class Encoder(object):
         self.config = config
         
     def encodeQ(self, inputs, seq_len, dropout, scope="encodeQ"):
-        q_cell = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
-        q_cell_dropout = tf.nn.rnn_cell.DropoutWrapper(q_cell, 1.0, 1-dropout)
+    
+        q_cell_fwd = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
+        q_cell_bwd = tf.nn.rnn_cell.LSTMCell(self.config.flag.state_size, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
+        q_cell_fwd_dropout = tf.nn.rnn_cell.DropoutWrapper(q_cell_fwd, 1.0, 1-dropout)
+        q_cell_bwd_dropout = tf.nn.rnn_cell.DropoutWrapper(q_cell_bwd, 1.0, 1-dropout)
         with vs.variable_scope(scope):
-            outputs, outputStates = tf.nn.dynamic_rnn(q_cell_dropout, inputs, sequence_length=seq_len, dtype=tf.float32)
+            (fwd_out, bwd_out), outputStates = tf.nn.bidirectional_dynamic_rnn(q_cell_fwd_dropout, q_cell_bwd_dropout, inputs, sequence_length=seq_len, dtype=tf.float32)
+        outputs = tf.concat(2, [fwd_out, bwd_out])
+        
         return outputs, outputStates
         
     def encodeP(self, inputs, seq_len, dropout, scope="encodeP"):
@@ -144,15 +152,18 @@ class Encoder(object):
             outputs, outputStates = tf.nn.dynamic_rnn(p_cell_dropout, inputs, sequence_length=seq_len, dtype=tf.float32)
         return outputs, outputStates
     
-    def encodeMatchLSTM(self, inputs, Hq, seq_len, scope="encodeMatchLSTM"):
+    def encodeMatchLSTM(self, inputs, Hq, seq_len, dropout, scope="encodeMatchLSTM"):
         dh = self.config.flag.state_size
         dims = tf.shape(inputs)
         
         fwdLSTMCell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())
-        bwdLSTMCell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())    
+        bwdLSTMCell = tf.nn.rnn_cell.LSTMCell(dh, state_is_tuple=True, initializer=tf.contrib.layers.xavier_initializer())  
+
+        fwdLSTMCell_dropout = tf.nn.rnn_cell.DropoutWrapper(fwdLSTMCell, 1.0, 1-dropout)
+        bwdLSTMCell_dropout = tf.nn.rnn_cell.DropoutWrapper(bwdLSTMCell, 1.0, 1-dropout)
     
-        matchLSTMCellFwd = MatchLSTMCell(self.config, Hq, fwdLSTMCell, "fwd", False)
-        matchLSTMCellBwd = MatchLSTMCell(self.config, Hq, bwdLSTMCell, "bwd", True)
+        matchLSTMCellFwd = MatchLSTMCell(self.config, Hq, fwdLSTMCell_dropout, "fwd", False)
+        matchLSTMCellBwd = MatchLSTMCell(self.config, Hq, bwdLSTMCell_dropout, "bwd", True)
         
         initState = tf.tile(tf.constant(0, dtype=tf.float32, shape=[1, dh]), [dims[0], 1])
         initStateTuple = (initState, initState)
@@ -167,7 +178,7 @@ class Encoder(object):
         outputStatesBwd = _reverse(outputStatesBwd, seq_lengths=seq_len, seq_dim=1, batch_dim=0)
         
         outputs = tf.concat(2, [outputsFwd, outputsBwd])
-        outputStates = tf.concat(1, [outputStatesFwd, outputStatesBwd])
+        outputStates = tf.concat(2, [outputStatesFwd, outputStatesBwd])
         
         # outputs is Hr transposed
         return outputs, outputStates
@@ -270,6 +281,7 @@ class QASystem(object):
         self.encoder = encoder
         self.decoder = decoder
         self.config = config
+        self.mask_placeholder = tf.placeholder(tf.bool, shape=(None, self.config.flag.max_size_p), name="mask")
         self.inputs_p_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_p), name="inputs_p_placeholder")
         self.inputs_q_placeholder = tf.placeholder(tf.int32, shape=(None, self.config.flag.max_size_q), name="inputs_q_placeholder")
         self.sequence_length_p_placeholder = tf.placeholder(tf.int32, shape=None, name="sequence_length_p")
@@ -301,7 +313,7 @@ class QASystem(object):
         Hp, _ = self.encoder.encodeP(self.embeddings_p, self.sequence_length_p_placeholder, self.dropout_placeholder)
                 
         # Match LSTM layer
-        Hr, _ = self.encoder.encodeMatchLSTM(Hp, Hq, self.sequence_length_p_placeholder)
+        Hr, _ = self.encoder.encodeMatchLSTM(Hp, Hq, self.sequence_length_p_placeholder, self.dropout_placeholder)
         
         # Answer Pointer Layer
         self.a_s, self.a_e = self.decoder.decodeAnswerPtr(Hr, self.sequence_length_p_placeholder)
@@ -311,6 +323,8 @@ class QASystem(object):
         Set up your loss computation here
         :return:
         """
+        self.a_s = tf.add(self.a_s, (1 - tf.cast(self.mask_placeholder, 'float')) * (-1e30), name="exp_mask")
+        self.a_e = tf.add(self.a_e, (1 - tf.cast(self.mask_placeholder, 'float')) * (-1e30), name="exp_mask")
         with vs.variable_scope("loss"):
             l1 = ssce(self.a_s, self.labels_answer_start)
             l2 = ssce(self.a_e, self.labels_answer_end)
@@ -352,13 +366,13 @@ class QASystem(object):
         :return:
         """
         input_feed = {}
-        input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder] = pad_sequences(train_x[0], self.config.flag.max_size_p)
-        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(train_x[1], self.config.flag.max_size_q)
+        input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder], input_feed[self.mask_placeholder] = pad_sequences(train_x[0], self.config.flag.max_size_p)
+        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder], _ = pad_sequences(train_x[1], self.config.flag.max_size_q)
         input_feed[self.labels_answer_start] = [item[0] for item in train_y]
         input_feed[self.labels_answer_end] = [item[1] for item in train_y]
         input_feed[self.dropout_placeholder] = self.config.flag.dropout
 
-        output_feed = [self.train_op, self.loss, self.outGrad] #, self.learning_rate, self.a_s, self.a_e, self.labels_answer_start, self.labels_answer_end]
+        output_feed = [self.train_op, self.loss, self.outGrad] #, self.a_s, self.a_e, self.labels_answer_start, self.labels_answer_end]
 
         outputs = session.run(output_feed, feed_dict=input_feed)
         
@@ -372,8 +386,8 @@ class QASystem(object):
         """
         input_feed = {}
 
-        input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder] = pad_sequences(valid_x[0], self.config.flag.max_size_p)
-        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(valid_x[1], self.config.flag.max_size_q)
+        input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder], input_feed[self.mask_placeholder] = pad_sequences(valid_x[0], self.config.flag.max_size_p)
+        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder], _ = pad_sequences(valid_x[1], self.config.flag.max_size_q)
         input_feed[self.labels_answer_start] = [item[0] for item in valid_y]
         input_feed[self.labels_answer_end] = [item[1] for item in valid_y]
         input_feed[self.dropout_placeholder] = 0
@@ -391,8 +405,8 @@ class QASystem(object):
         :return:
         """
         input_feed = {}
-        input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder] = pad_sequences(test_x[0], self.config.flag.max_size_p)
-        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder] = pad_sequences(test_x[1], self.config.flag.max_size_q)
+        input_feed[self.inputs_p_placeholder], input_feed[self.sequence_length_p_placeholder], input_feed[self.mask_placeholder] = pad_sequences(test_x[0], self.config.flag.max_size_p)
+        input_feed[self.inputs_q_placeholder], input_feed[self.sequence_length_q_placeholder], _ = pad_sequences(test_x[1], self.config.flag.max_size_q)
         input_feed[self.dropout_placeholder] = 0
         
         output_feed = [self.a_s, self.a_e]
@@ -461,12 +475,12 @@ class QASystem(object):
                 em_instance = exact_match_score(prediction, gt)
                 em = em + em_instance
                 f1 = f1 + f1_instance
-            i += self.config.flag.batch_size
+                i += 1
         em = 100 * em / float(sample)
         f1 = 100 * f1 / float(sample)
         
         if log:
-            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
+            logging.info("Output for '{}' dataset - F1: {}, EM: {}, for {} samples".format(datatype, f1, em, sample))
         
         return f1, em
 
@@ -515,7 +529,7 @@ class QASystem(object):
                 _, batch_loss, grad_norm = self.optimize(session, (batchP, batchQ), batchA)
                 loss += batch_loss
                 count += 1
-                print("Batch Loss: {}, Gradient: {}, Learning Rate: {}".format(batch_loss, grad_norm, lr))
+                print("Batch Loss: {}, Gradient: {}".format(batch_loss, grad_norm))
                 #print("Predicted a_s={} a_e={}".format(np.argmax(a_s, axis=1),np.argmax(a_e, axis=1)))
                 #print("Actual a_s={} a_e={}".format(s,e))
                 
