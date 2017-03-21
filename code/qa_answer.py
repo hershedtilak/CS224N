@@ -28,10 +28,10 @@ FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_float("learning_rate", 0.001, "Learning rate.")
 tf.app.flags.DEFINE_float("step_decay_rate", 0.9, "rate at which learning rate decreases.")
-tf.app.flags.DEFINE_float("dropout", 0.15, "Fraction of units randomly dropped on non-recurrent connections.")
+tf.app.flags.DEFINE_float("dropout", 0., "Fraction of units randomly dropped on non-recurrent connections.")
 tf.app.flags.DEFINE_integer("batch_size", 64, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("epochs", 0, "Number of epochs to train.")
-tf.app.flags.DEFINE_integer("state_size", 100, "Size of each model layer.")
+tf.app.flags.DEFINE_integer("state_size", 150, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("embedding_size", 100, "Size of the pretrained vocabulary.")
 tf.app.flags.DEFINE_integer("output_size", 700, "The output size of your model.")
 tf.app.flags.DEFINE_integer("keep", 0, "How many checkpoints to keep, 0 indicates keep all.")
@@ -54,7 +54,7 @@ def initialize_model(session, model, train_dir):
     print(ckpt)
     print("=======")
     print(ckpt.all_model_checkpoint_paths)
-    ckpt_path = ckpt.all_model_checkpoint_paths[4]
+    ckpt_path = ckpt.all_model_checkpoint_paths[3]
     v2_path = ckpt_path + ".index" if ckpt else ""
     if ckpt and (tf.gfile.Exists(ckpt_path) or tf.gfile.Exists(v2_path)):
         logging.info("Reading model parameters from %s" % ckpt_path)
@@ -148,7 +148,9 @@ def generate_answers(answers, sess, model, dataset, rev_vocab):
     """
     preds = model.answer(sess, dataset)
     for idx in range(len(preds[0])):
-        answers[dataset[2][idx]] = ' '.join(dataset[3][idx][preds[0][idx]:(preds[1][idx]+1)])
+        answer = dataset[0][idx][preds[0][idx]:(preds[1][idx]+1)]
+        answer = [rev_vocab[a] for a in answer]
+        answers[dataset[2][idx]] = ' '.join(answer)
     # print('*******')
     # print(answers)
     # TODO
@@ -209,8 +211,8 @@ def main(_):
 
     qa = QASystem(encoder, decoder, config=config)
 
-    with tf.Session(config = tf.ConfigProto(device_count={'GPU':0})) as sess:
-    #with tf.Session() as sess:
+    #with tf.Session(config = tf.ConfigProto(device_count={'GPU':0})) as sess:
+    with tf.Session() as sess:
         train_dir = get_normalized_train_dir(FLAGS.train_dir)
         initialize_model(sess, qa, train_dir)
         idx = 0
@@ -221,7 +223,7 @@ def main(_):
             idx += qa.config.flag.batch_size
             print("%s/%s"%(idx,total_len))
         # write to json file to root dir
-        with io.open('dev-prediction_epoch7.json', 'w', encoding='utf-8') as f:
+        with io.open('dev-prediction_gold_epoch3.json', 'w', encoding='utf-8') as f:
             f.write(unicode(json.dumps(answers, ensure_ascii=False)))
 
 
