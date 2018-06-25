@@ -26,7 +26,7 @@ UNK_ID = 2
 
 def setup_args():
     parser = argparse.ArgumentParser()
-    home = os.path.join(os.path.dirname(os.path.realpath(__file__)))
+    code_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)))
     vocab_dir = os.path.join("data", "squad")
     glove_dir = os.path.join("download", "dwr")
     source_dir = os.path.join("data", "squad")
